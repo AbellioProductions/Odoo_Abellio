@@ -62,27 +62,33 @@ class MesPlannedDowntime(models.Model):
         return time(min(hours, 23), min(minutes, 59))
 
     @api.model
-    def generate_flat_schedule_for_week(self, days_ahead=7):
+    def generate_flat_schedule_for_week(self, days_ahead=14):
         if isinstance(days_ahead, (list, tuple)) or not isinstance(days_ahead, int):
-            days_ahead = 7
-
+            days_ahead = 14
+            
         flat_model = self.env['mes.flat.downtime']
         now_utc = datetime.utcnow()
         
-        flat_model.search([('start_time', '>=', now_utc)]).unlink()
-
         tz = pytz.timezone(self.env.user.tz or 'Europe/Dublin')
         local_now = datetime.now(tz)
         start_date = local_now.date()
         end_date = start_date + timedelta(days=days_ahead)
 
         vals_list = []
-        rules = self.search([('active', '=', True)])
+        rules = self if self else self.search([('active', '=', True)])
 
         for rule in rules:
+            if rule.rule_type == 'one_time':
+                flat_model.search([('rule_id', '=', rule.id)]).unlink()
+            else:
+                flat_model.search([
+                    ('rule_id', '=', rule.id), 
+                    ('start_time', '>=', now_utc)
+                ]).unlink()
+
             for machine in rule.machine_ids:
                 if rule.rule_type == 'one_time':
-                    if rule.date_start and rule.date_end and rule.date_end >= now_utc:
+                    if rule.date_start and rule.date_end:
                         vals_list.append({
                             'machine_id': machine.id,
                             'rule_id': rule.id,
@@ -93,14 +99,17 @@ class MesPlannedDowntime(models.Model):
                 elif rule.rule_type == 'daily':
                     for i in range((end_date - start_date).days + 1):
                         current_date = start_date + timedelta(days=i)
-                        if current_date.weekday() < 5:  # Будние дни (0=Пн, 4=Пт)
+                        if current_date.weekday() < 5: 
                             s_time = rule._float_to_time(rule.daily_start)
                             e_time = rule._float_to_time(rule.daily_end)
                             
                             loc_start = tz.localize(datetime.combine(current_date, s_time))
                             loc_end = tz.localize(datetime.combine(current_date, e_time))
                             
-                            if loc_start < loc_end and loc_end > pytz.utc.localize(now_utc):
+                            if loc_start >= loc_end:
+                                loc_end += timedelta(days=1)
+                            
+                            if loc_end > pytz.utc.localize(now_utc):
                                 vals_list.append({
                                     'machine_id': machine.id,
                                     'rule_id': rule.id,

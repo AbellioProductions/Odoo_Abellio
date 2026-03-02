@@ -1,6 +1,9 @@
 import re
+import logging
 from datetime import datetime, timedelta
 from odoo import models, fields, api
+
+_logger = logging.getLogger(__name__)
 
 class MesMachineSettings(models.Model):
     _name = 'mes.machine.settings'
@@ -173,47 +176,98 @@ class MesMachineSettings(models.Model):
             return f"{top_rej_name} ({int(top_rej_count)})"
         return "None"
 
-    def _build_downtime_cte(self, start_time, end_time, workcenter):
+    def _get_planned_working_intervals(self, start_time, end_time, workcenter):
+        now = fields.Datetime.now()
+        calc_end_time = min(now, end_time)
+
+        if start_time >= calc_end_time:
+            return [], 0.0
+
         if not workcenter:
-            empty_cte = "SELECT '1970-01-01 UTC'::timestamptz as dt_start, '1970-01-01 UTC'::timestamptz as dt_end WHERE FALSE"
-            return empty_cte, 0.0
+            return [(start_time, calc_end_time)], (calc_end_time - start_time).total_seconds()
 
         downtimes = self.env['mes.flat.downtime'].search([
             ('machine_id', '=', workcenter.id),
-            ('start_time', '<', end_time),
+            ('start_time', '<', calc_end_time),
             ('end_time', '>', start_time)
         ])
-        
-        dt_values = []
-        total_planned_downtime_sec = 0.0
-        
-        for dt in downtimes:
-            dt_values.append(f"('{dt.start_time} UTC'::timestamptz, '{dt.end_time} UTC'::timestamptz)")
-            
-            dt_s = max(dt.start_time, start_time)
-            dt_e = min(dt.end_time, end_time)
-            if dt_e > dt_s:
-                total_planned_downtime_sec += (dt_e - dt_s).total_seconds()
-                
-        if dt_values:
-            dt_cte = "SELECT * FROM (VALUES " + ", ".join(dt_values) + ") AS dt(dt_start, dt_end)"
-        else:
-            dt_cte = "SELECT '1970-01-01 UTC'::timestamptz as dt_start, '1970-01-01 UTC'::timestamptz as dt_end WHERE FALSE"
-            
-        return dt_cte, total_planned_downtime_sec
 
-    def _fetch_raw_oee_data(self, cursor, start_time, end_time, state_tag, plc_value, good_count_tag, is_cumulative, dt_cte):
-        prod_sql = "SELECT COALESCE(MAX(value) - MIN(value), 0) as total_produced" if is_cumulative else "SELECT COALESCE(SUM(value), 0) as total_produced"
-        
+        _logger.info(f"For machine {workcenter.name}, found {len(downtimes)} downtimes overlapping with shift window {start_time} - {calc_end_time}")
+
+        intervals = []
+        for dt in downtimes:
+            dt_s = max(dt.start_time, start_time)
+            dt_e = min(dt.end_time, calc_end_time)
+            _logger.info(f"For machine {workcenter.name}, processing downtime from {dt_s} to {dt_e}")
+
+            if dt_s < dt_e:
+                intervals.append([dt_s, dt_e])
+
+        _logger.info(f"For machine {workcenter.name}, found {len(intervals)} downtime intervals after processing overlapping downtimes")
+
+
+        dt_merged = []
+        if intervals:
+            intervals.sort(key=lambda x: x[0])
+            dt_merged = [intervals[0]]
+            for current in intervals[1:]:
+                _logger.info(f"For machine {workcenter.name}, processing downtime from {current[0]} to {current[1]} for merging")
+                last = dt_merged[-1]
+                if current[0] <= last[1]:
+                    dt_merged[-1] = [last[0], max(last[1], current[1])]
+                else:
+                    dt_merged.append(current)
+
+        _logger.info(f"For machine {workcenter.name}, found {len(dt_merged)} merged downtime intervals after processing overlapping downtimes")
+
+        active_intervals = []
+        current_time = start_time
+        for dt in dt_merged:
+            if current_time < dt[0]:
+                active_intervals.append((current_time, dt[0]))
+            current_time = max(current_time, dt[1])
+
+        if current_time < calc_end_time:
+            active_intervals.append((current_time, calc_end_time))
+
+        _logger.info(f"For machine {workcenter.name}, found {len(active_intervals)} active intervals after processing merged downtimes")
+
+        total_planned_runtime_sec = sum((i[1] - i[0]).total_seconds() for i in active_intervals)
+
+        return active_intervals, total_planned_runtime_sec
+
+    def _fetch_shift_metrics(self, cursor, start_time, end_time, good_count_tag, is_cumulative, prod_count_id):
+        prod_sql = "SELECT COALESCE(MAX(value) - MIN(value), 0)" if is_cumulative else "SELECT COALESCE(SUM(value), 0)"
+        query = f"{prod_sql} FROM telemetry_count WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s"
+        cursor.execute(query, (self.name, good_count_tag, start_time, end_time))
+        res = cursor.fetchone()
+        total_produced = res[0] if res else 0
+
+        top_alarm = self.get_top_alarm_str(cursor, start_time, end_time)
+        top_rejection = self.get_top_rejection_str(cursor, start_time, end_time, prod_count_id)
+
+        return total_produced, top_alarm, top_rejection
+
+    def _fetch_active_runtime(self, cursor, state_tag, plc_value, active_intervals):
+        _logger.info(f"Calculating active runtime for machine {self.name} with state_tag={state_tag}, plc_value={plc_value}, active_intervals={active_intervals}")
+        if not active_intervals:
+            return 0.0
+
+        scan_start = active_intervals[0][0]
+        scan_end = active_intervals[-1][1]
+
+        val_list = [f"('{a_s} UTC'::timestamptz, '{a_e} UTC'::timestamptz)" for a_s, a_e in active_intervals]
+        active_cte = "SELECT * FROM (VALUES " + ", ".join(val_list) + ") AS ai(ai_start, ai_end)"
+
         query = f"""
-            WITH boundary_state AS (
-                SELECT %s::timestamptz as time, value, 0::bigint as id 
+            WITH boundary AS (
+                SELECT time, value, 0::bigint as id
                 FROM telemetry_event
-                WHERE machine_name = %s AND tag_name = %s AND time < %s
+                WHERE machine_name = %s AND tag_name = %s AND time <= %s
                 ORDER BY time DESC, id DESC LIMIT 1
             ),
-            shift_events AS (
-                SELECT time, value, id FROM boundary_state WHERE value = %s
+            events AS (
+                SELECT time, value, id FROM boundary where value = %s
                 UNION ALL
                 SELECT time, value, id FROM telemetry_event
                 WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
@@ -221,99 +275,107 @@ class MesMachineSettings(models.Model):
             state_durations AS (
                 SELECT time as state_start, value as state,
                     COALESCE(LEAD(time) OVER (ORDER BY time ASC, id ASC), %s) as state_end
-                FROM shift_events
+                FROM events
             ),
             running_durations AS (
                 SELECT state_start, state_end FROM state_durations WHERE state = %s
             ),
-            planned_downtimes AS ( {dt_cte} ),
-            running_with_downtime AS (
-                SELECT r.state_start, r.state_end,
-                    EXTRACT(EPOCH FROM (r.state_end - r.state_start)) as raw_duration,
-                    COALESCE(SUM(
-                        CASE WHEN fd.dt_start IS NOT NULL THEN
-                            GREATEST(0, EXTRACT(EPOCH FROM (
-                                LEAST(r.state_end, fd.dt_end) - GREATEST(r.state_start, fd.dt_start)
-                            )))
-                        ELSE 0 END
-                    ), 0) as planned_downtime_overlap
-                FROM running_durations r
-                LEFT JOIN planned_downtimes fd ON fd.dt_start < r.state_end AND fd.dt_end > r.state_start
-                GROUP BY r.state_start, r.state_end
-            ),
-            availability_stats AS (
-                SELECT COALESCE(SUM(raw_duration - planned_downtime_overlap), 0) as total_running_sec 
-                FROM running_with_downtime
-            ),
-            production_stats AS (
-                {prod_sql} FROM telemetry_count
-                WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
-            )
-            SELECT a.total_running_sec, p.total_produced
-            FROM availability_stats a CROSS JOIN production_stats p;
-        """
-        params = (
-            start_time, self.name, state_tag, start_time,          
-            plc_value,                                           
-            self.name, state_tag, start_time, end_time,       
-            end_time,                                         
-            plc_value,                                           
-            self.name, good_count_tag, start_time, end_time   
-        )
-        cursor.execute(query, params)
-        res = cursor.fetchone() or (0, 0)
-        return (res[0] or 0), (res[1] or 0)
-
-    def _fetch_first_start_time(self, cursor, start_time, end_time, state_tag, plc_value, dt_cte):
-        query = f"""
-            WITH boundary AS (
-                SELECT value FROM telemetry_event
-                WHERE machine_name = %s AND tag_name = %s AND time < %s 
-                ORDER BY time DESC, id DESC LIMIT 1
-            ),
-            planned_downtimes AS ( {dt_cte} ),
-            first_running_in_shift AS (
-                SELECT te.time FROM telemetry_event te
-                WHERE te.machine_name = %s AND te.tag_name = %s AND te.time >= %s AND te.time <= %s
-                AND te.value = %s
-                AND NOT EXISTS (
-                    SELECT 1 FROM planned_downtimes fd WHERE te.time >= fd.dt_start AND te.time < fd.dt_end
-                )
-                ORDER BY te.time ASC, te.id ASC LIMIT 1
-            )
-            SELECT 
-                CASE 
-                    WHEN (SELECT value FROM boundary) = %s THEN %s::timestamptz
-                    ELSE (SELECT time FROM first_running_in_shift)
-                END
+            active_windows AS ( {active_cte} )
+            SELECT COALESCE(SUM(
+                GREATEST(0, EXTRACT(EPOCH FROM (
+                    LEAST(r.state_end, aw.ai_end) - GREATEST(r.state_start, aw.ai_start)
+                )))
+            ), 0)
+            FROM running_durations r
+            INNER JOIN active_windows aw ON aw.ai_start < r.state_end AND aw.ai_end > r.state_start
         """
         cursor.execute(query, (
-            self.name, state_tag, start_time,                                  
-            self.name, state_tag, start_time, end_time, plc_value, 
-            plc_value, start_time                                            
+            self.name, state_tag, scan_start,
+            plc_value, self.name, state_tag, scan_start, scan_end,
+            scan_end,
+            plc_value
+        ))
+        res = cursor.fetchone()
+        return float(res[0]) if res else 0.0
+
+    def _fetch_first_start_time(self, cursor, state_tag, plc_value, active_intervals):
+        if not active_intervals:
+            return False
+
+        scan_start = active_intervals[0][0]
+        scan_end = active_intervals[-1][1]
+
+        _logger.info(f"Calculating first start time for machine {self.name} from start_scan={scan_start} to end_scan={scan_end} with state_tag={state_tag} and plc_value={plc_value}")
+        
+
+        val_list = [f"('{a_s} UTC'::timestamptz, '{a_e} UTC'::timestamptz)" for a_s, a_e in active_intervals]
+        active_cte = "SELECT * FROM (VALUES " + ", ".join(val_list) + ") AS ai(ai_start, ai_end)"
+
+        query = f"""
+            WITH boundary AS (
+                SELECT time, value, 0::bigint as id
+                FROM telemetry_event
+                WHERE machine_name = %s AND tag_name = %s AND time <= %s
+                ORDER BY time DESC, id DESC LIMIT 1
+            ),
+            events AS (
+                SELECT time, value, id FROM boundary where value = %s
+                UNION ALL
+                SELECT time, value, id FROM telemetry_event
+                WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
+            ),
+            state_durations AS (
+                SELECT GREATEST(time, %s) as r_start,
+                    COALESCE(LEAD(time) OVER (ORDER BY time ASC, id ASC), %s) as r_end,
+                    value as state
+                FROM events
+            ),
+            running_durations AS (
+                SELECT r_start, r_end FROM state_durations WHERE state = %s AND r_start < r_end
+            ),
+            active_windows AS ( {active_cte} ),
+            effective_runs AS (
+                SELECT GREATEST(r.r_start, aw.ai_start) as eff_start
+                FROM running_durations r
+                INNER JOIN active_windows aw ON aw.ai_start < r.r_end AND aw.ai_end > r.r_start
+            )
+            SELECT MIN(eff_start) FROM effective_runs;
+        """
+        cursor.execute(query, (
+            self.name, state_tag, scan_start,
+            plc_value,self.name, state_tag, scan_start, scan_end,
+            scan_start, scan_end,
+            plc_value
         ))
         res = cursor.fetchone()
         return res[0].replace(tzinfo=None) if res and res[0] else False
 
-    def _calculate_kpi(self, total_running_sec, total_produced, start_time, end_time, total_planned_dt_sec, workcenter):
+    def _calculate_kpi(self, total_running_sec, total_produced, total_planned_runtime_sec, workcenter):
+        
+        _logger.info(f"For machine {workcenter.name}: total_running_sec={total_running_sec}, total_produced={total_produced}, total_planned_runtime_sec={total_planned_runtime_sec}")
+        total_running_sec = max(0.0, total_running_sec)
+        
         h, m, s = int(total_running_sec // 3600), int((total_running_sec % 3600) // 60), int(total_running_sec % 60)
         runtime_formatted = f"{h:02d}:{m:02d}:{s:02d}"
 
-        planned_production_time_sec = max(0.0, (end_time - start_time).total_seconds() - total_planned_dt_sec)
         ideal_rate_per_sec = (workcenter.ideal_capacity_per_min / 60.0) if (workcenter and workcenter.ideal_capacity_per_min > 0) else 1.0 
             
-        raw_availability = total_running_sec / planned_production_time_sec if planned_production_time_sec > 0 else 0
-        availability = min(raw_availability, 1.0)
+        raw_availability = total_running_sec / total_planned_runtime_sec if total_planned_runtime_sec > 0 else 0
+        availability = max(0.0, min(raw_availability, 1.0))
         
         raw_performance = total_produced / (total_running_sec * ideal_rate_per_sec) if total_running_sec > 0 else 0
-        performance = min(raw_performance, 1.0)
+        performance = max(0.0, min(raw_performance, 1.0))
         
         quality = 1.0 
         oee = availability * performance * quality
 
-        downtime_losses = max(0.0, 1.0 - raw_availability) if planned_production_time_sec > 0 else 0.0
+        downtime_losses = max(0.0, 1.0 - raw_availability) if total_planned_runtime_sec > 0 else 0.0
         perfect_amount_for_runtime = total_running_sec * ideal_rate_per_sec
-        waste_losses = 1 - (total_produced / perfect_amount_for_runtime) if (planned_production_time_sec > 0 and perfect_amount_for_runtime > 0) else 0.0
+
+        _logger.info(f"For machine {workcenter.name}: total_produced={total_produced}, perfect_amount_for_runtime={perfect_amount_for_runtime}, total_planned_runtime_sec={total_planned_runtime_sec}")
+        
+        waste_losses = 1 - (total_produced / perfect_amount_for_runtime) if (total_planned_runtime_sec > 0 and perfect_amount_for_runtime > 0) else 0.0
+        waste_losses = max(0.0, waste_losses)
 
         return {
             'availability': round(availability * 100, 2),
@@ -333,7 +395,6 @@ class MesMachineSettings(models.Model):
         if not start_time or not shift_end:
             return {'error': 'Configuration error: No active shift. Calculation is not possible.'}
             
-        calc_end_time = min(fields.Datetime.now(), shift_end)
         state_tag, running_plc_value = runtime_event.get_mapping_for_machine(self)
         good_count_tag, is_cumulative = production_count.get_count_config_for_machine(self)
 
@@ -343,24 +404,27 @@ class MesMachineSettings(models.Model):
         if not workcenter:
             workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', self.id)], limit=1)
 
-        dt_cte, total_planned_dt_sec = self._build_downtime_cte(start_time, calc_end_time, workcenter)
+        active_intervals, total_planned_runtime_sec = self._get_planned_working_intervals(start_time, shift_end, workcenter)
+
+        calc_end_time = min(fields.Datetime.now(), shift_end)
 
         ts_manager = self.env['mes.timescale.base']
         with ts_manager._connection() as conn:
             with conn.cursor() as cur:
-                total_running_sec, total_produced = self._fetch_raw_oee_data(
-                    cur, start_time, calc_end_time, state_tag, running_plc_value, good_count_tag, is_cumulative, dt_cte
+                total_produced, top_alarm_str, top_rejection_str = self._fetch_shift_metrics(
+                    cur, start_time, calc_end_time, good_count_tag, is_cumulative, production_count.id
+                )
+                
+                total_running_sec = self._fetch_active_runtime(
+                    cur, state_tag, running_plc_value, active_intervals
                 )
                 
                 first_running_time = self._fetch_first_start_time(
-                    cur, start_time, calc_end_time, state_tag, running_plc_value, dt_cte
+                    cur, state_tag, running_plc_value, active_intervals
                 )
-                
-                top_alarm_str = self.get_top_alarm_str(cur, start_time, calc_end_time)
-                top_rejection_str = self.get_top_rejection_str(cur, start_time, calc_end_time, production_count.id)
 
         kpi_results = self._calculate_kpi(
-            total_running_sec, total_produced, start_time, calc_end_time, total_planned_dt_sec, workcenter
+            total_running_sec, total_produced, total_planned_runtime_sec, workcenter
         )
         
         kpi_results.update({
