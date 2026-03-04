@@ -16,7 +16,7 @@ access_mes_sig_proc_admin,mes.signal.process.admin,model_mes_signal_process,mes_
 access_mes_timescale_admin,mes.timescale.admin,model_mes_timescale_db_manager,mes_core.group_mes_administrator,1,1,1,1
 
 access_mes_ext_wiz_admin,mes.ext.wiz.admin,model_mes_external_import_wizard,mes_core.group_mes_administrator,1,1,1,1
-access_mes_dict_wiz_admin,mes.dict.wiz.admin,model_mes_dictionary_import_wizard,mes_core.group_mes_administrator,1,1,1,1
+access_mes_dictionary_import_wizard_admin,mes.dictionary.import.wizard admin,model_mes_dictionary_import_wizard,mes_core.group_mes_administrator,1,1,1,1
 access_mes_csv_wiz_admin,mes.csv.wiz.admin,model_mes_raw_data_csv_import_wizard,mes_core.group_mes_administrator,1,1,1,1
 
 access_mes_fdw_hour_admin,mes.fdw.hour.admin,model_mes_telemetry_hourly_fdw,mes_core.group_mes_administrator,1,0,0,0
@@ -57,7 +57,7 @@ access_mes_sig_proc_manager,mes.signal.process.manager,model_mes_signal_process,
 access_mes_timescale_manager,mes.timescale.manager,model_mes_timescale_db_manager,mes_core.group_mes_manager,1,0,0,0
 
 access_mes_ext_wiz_manager,mes.ext.wiz.manager,model_mes_external_import_wizard,mes_core.group_mes_manager,1,0,0,0
-access_mes_dict_wiz_manager,mes.dict.wiz.manager,model_mes_dictionary_import_wizard,mes_core.group_mes_manager,1,0,0,0
+access_mes_dictionary_import_wizard_manager,mes.dictionary.import.wizard manager,model_mes_dictionary_import_wizard,mes_core.group_mes_manager,1,0,0,0
 access_mes_csv_wiz_manager,mes.csv.wiz.manager,model_mes_raw_data_csv_import_wizard,mes_core.group_mes_manager,1,0,0,0
 
 access_mes_fdw_hour_manager,mes.fdw.hour.manager,model_mes_telemetry_hourly_fdw,mes_core.group_mes_manager,1,0,0,0

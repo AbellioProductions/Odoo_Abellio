@@ -82,8 +82,8 @@ class MesHierarchyMixin(models.AbstractModel):
     def sync_batch(self, data_list):
         existing = self.search([])
         code_map = {r.code: r for r in existing if r.code}
-        name_map = {r.name: r for r in existing}
-        parent_cache = {r.name: r.id for r in existing}
+        name_map = {r.name: r for r in existing if r.name}
+        parent_cache = {r.name: r.id for r in existing if r.name}
 
         for item in data_list:
             name = item.get('name', '').strip()
@@ -94,6 +94,9 @@ class MesHierarchyMixin(models.AbstractModel):
             if not name:
                 continue
 
+            if name == parent_name:
+                parent_name = ''
+
             parent_id = False
             if parent_name:
                 if parent_name not in parent_cache:
@@ -102,16 +105,32 @@ class MesHierarchyMixin(models.AbstractModel):
                     name_map[parent_name] = new_parent
                 parent_id = parent_cache[parent_name]
 
-            vals.update({
-                'name': name,
-                'parent_id': parent_id
-            })
+            vals.update({'name': name})
+            if parent_name:
+                vals['parent_id'] = parent_id
             if code:
                 vals['code'] = code
 
-            rec = code_map.get(code) if code else name_map.get(name)
+            rec = code_map.get(code) if code else None
+            if not rec:
+                rec = name_map.get(name)
+
             if rec:
-                rec.write(vals)
+                if parent_id and parent_id == rec.id:
+                    vals.pop('parent_id', None)
+                
+                try:
+                    with self.env.cr.savepoint():
+                        rec.write(vals)
+                except Exception as e:
+                    _logger.warning(f"Skipping parent for '{name}' to avoid recursion loop.")
+                    vals.pop('parent_id', None)
+                    rec.write(vals)
+
+                if code and code not in code_map:
+                    code_map[code] = rec
+                name_map[name] = rec
+                parent_cache[name] = rec.id
             else:
                 new_rec = self.create(vals)
                 if code:

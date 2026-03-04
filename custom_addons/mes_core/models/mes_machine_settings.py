@@ -269,27 +269,46 @@ class MesMachineSettings(models.Model):
         alarm_tag = self.get_alarm_tag_name('OEE.nStopRootReason')
         query = f"""
             WITH alarm_boundary AS (
-                SELECT time, value, 0::bigint as id FROM telemetry_event
-                WHERE machine_name = %s AND tag_name LIKE %s AND time < %s ORDER BY time DESC LIMIT 1
+                SELECT tag_name, time, value, 0::bigint as id 
+                FROM telemetry_event
+                WHERE machine_name = %s LIKE %s AND time < %s 
+                ORDER BY time DESC LIMIT 1
             ),
             alarm_events AS (
-                SELECT time, value, id FROM alarm_boundary UNION ALL
+                SELECT GREATEST(time, %s), value, id FROM alarm_boundary  where tag_name = %s
+                UNION ALL
                 SELECT time, value, id FROM telemetry_event
                 WHERE machine_name = %s AND tag_name LIKE %s AND time >= %s AND time <= %s
             ),
             alarm_durations AS (
-                SELECT value as alarm_code, EXTRACT(EPOCH FROM (COALESCE(LEAD(time) OVER (ORDER BY time), %s) - time)) as duration_sec
+                SELECT value as alarm_code, EXTRACT(EPOCH FROM (COALESCE(LEAD(time) OVER (ORDER BY time, id), %s) - time)) as duration_sec
                 FROM alarm_events
             )
-            SELECT alarm_code, COUNT(alarm_code) as freq, SUM(duration_sec) as total_dur FROM alarm_durations
-            WHERE alarm_code IS NOT NULL AND alarm_code != 0 AND alarm_code != ''
+            SELECT alarm_code, COUNT(alarm_code) as freq, SUM(duration_sec) as total_dur 
+            FROM alarm_durations
+            WHERE alarm_code IS NOT NULL AND alarm_code != '0' AND alarm_code != ''
             GROUP BY alarm_code;
         """
+
         cursor.execute(query, (
-            self.name, alarm_tag, start_time,
-            self.name, alarm_tag, start_time, end_time, end_time
+            self.name, start_time,
+            start_time, alarm_tag, self.name, alarm_tag, start_time, end_time, 
+            end_time
         ))
         return cursor.fetchall()
+
+    def _fetch_waste_stats_raw(self, cursor, start_time, end_time):
+        query = """
+            SELECT tag_name, 
+                   COALESCE(SUM(value), 0) as sum_val, 
+                   COALESCE(MAX(value) - MIN(value), 0) as cum_val
+            FROM telemetry_count 
+            WHERE machine_name = %s AND time >= %s AND time <= %s
+            GROUP BY tag_name
+        """
+        cursor.execute(query, (self.name, start_time, end_time))
+
+        return {row[0]: {'sum': float(row[1]), 'cum': float(row[2])} for row in cursor.fetchall()}
 
     def _calculate_kpi(self, total_running_sec, total_produced, total_planned_runtime_sec, workcenter):
         
@@ -469,6 +488,36 @@ class MesMachineSettings(models.Model):
 
         return results
 
+    def action_import_machine_counts(self):
+        self.ensure_one()
+        return {
+            'name': 'Import Machine Counts',
+            'type': 'ir.actions.act_window',
+            'res_model': 'mes.dictionary.import.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_import_mode': 'machine',
+                'default_import_type': 'count',
+                'default_machine_id': self.id,
+            }
+        }
+
+    def action_import_machine_events(self):
+        self.ensure_one()
+        return {
+            'name': 'Import Machine Events/Alarms',
+            'type': 'ir.actions.act_window',
+            'res_model': 'mes.dictionary.import.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_import_mode': 'machine',
+                'default_import_type': 'event',
+                'default_machine_id': self.id,
+            }
+        }
+
 class MesSignalBase(models.AbstractModel):
     _name = 'mes.signal.base'
     _description = 'Base Signal Config'
@@ -625,6 +674,8 @@ class MesWasteLossStat(models.TransientModel):
                 
                 hours_run = (total_running_sec / 3600.0) if total_running_sec > 0 else 0.0
 
+                raw_counts = machine._fetch_waste_stats_raw(cur, start_time, calc_end_time)
+
                 for count_def in all_counts:
                     if good_tag and count_def.tag_name == good_tag:
                         continue
@@ -632,11 +683,8 @@ class MesWasteLossStat(models.TransientModel):
                     tag_name = count_def.tag_name
                     is_cum = count_def.is_cumulative
                     
-                    prod_sql = "SELECT COALESCE(MAX(value) - MIN(value), 0)" if is_cum else "SELECT COALESCE(SUM(value), 0)"
-                    query = f"{prod_sql} FROM telemetry_count WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s"
-                    cur.execute(query, (machine.name, tag_name, start_time, calc_end_time))
-                    res = cur.fetchone()
-                    waste_sum = float(res[0] if res and res[0] else 0.0)
+                    tag_data = raw_counts.get(tag_name, {'sum': 0.0, 'cum': 0.0})
+                    waste_sum = tag_data.get('cum') if is_cum else tag_data.get('sum')
                     
                     if waste_sum > 0:
                         vals_list.append({
