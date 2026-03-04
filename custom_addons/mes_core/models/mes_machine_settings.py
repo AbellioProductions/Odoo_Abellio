@@ -261,13 +261,13 @@ class MesMachineSettings(models.Model):
 
         query = f"""
             WITH boundary AS (
-                SELECT time, value, 0::bigint as id
+                SELECT tag_name, time, value, 0::bigint as id
                 FROM telemetry_event
-                WHERE machine_name = %s AND tag_name = %s AND time <= %s
+                WHERE machine_name = %s AND time <= %s
                 ORDER BY time DESC, id DESC LIMIT 1
             ),
             events AS (
-                SELECT time, value, id FROM boundary where value = %s
+                SELECT time, value, id FROM boundary where value = %s AND tag_name = %s
                 UNION ALL
                 SELECT time, value, id FROM telemetry_event
                 WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
@@ -290,8 +290,8 @@ class MesMachineSettings(models.Model):
             INNER JOIN active_windows aw ON aw.ai_start < r.state_end AND aw.ai_end > r.state_start
         """
         cursor.execute(query, (
-            self.name, state_tag, scan_start,
-            plc_value, self.name, state_tag, scan_start, scan_end,
+            self.name, scan_start,
+            plc_value, state_tag, self.name, state_tag, scan_start, scan_end,
             scan_end,
             plc_value
         ))
@@ -313,13 +313,13 @@ class MesMachineSettings(models.Model):
 
         query = f"""
             WITH boundary AS (
-                SELECT time, value, 0::bigint as id
+                SELECT tag_name, time, value, 0::bigint as id
                 FROM telemetry_event
-                WHERE machine_name = %s AND tag_name = %s AND time <= %s
+                WHERE machine_name = %s AND time <= %s
                 ORDER BY time DESC, id DESC LIMIT 1
             ),
             events AS (
-                SELECT time, value, id FROM boundary where value = %s
+                SELECT time, value, id FROM boundary where value = %s AND tag_name = %s
                 UNION ALL
                 SELECT time, value, id FROM telemetry_event
                 WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
@@ -342,8 +342,8 @@ class MesMachineSettings(models.Model):
             SELECT MIN(eff_start) FROM effective_runs;
         """
         cursor.execute(query, (
-            self.name, state_tag, scan_start,
-            plc_value,self.name, state_tag, scan_start, scan_end,
+            self.name, scan_start,
+            plc_value, state_tag, self.name, state_tag, scan_start, scan_end,
             scan_start, scan_end,
             plc_value
         ))

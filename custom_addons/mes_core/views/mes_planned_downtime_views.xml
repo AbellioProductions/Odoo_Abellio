@@ -7,7 +7,7 @@
         <field name="arch" type="xml">
             <form>
                 <header>
-                    <button name="generate_flat_schedule_for_week" string="Сгенерировать сейчас" type="object" class="oe_highlight"/>
+                    <button name="generate_flat_schedule_for_week" string="Generate now" type="object" class="oe_highlight"/>
                 </header>
                 <sheet>
                     <group>
