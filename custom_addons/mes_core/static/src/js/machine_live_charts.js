@@ -22,8 +22,10 @@ export class MachineLiveCharts extends Component {
             await loadJS("/web/static/lib/Chart/Chart.js");
             await this.fetchData();
             
-            const freq = Math.max(this.props.record.data.refresh_frequency || 60, 10);
-            this.refreshInterval = setInterval(() => this.fetchData(), freq * 1000);
+            if (this.props.record.resId) {
+                const freq = Math.max(this.props.record.data.refresh_frequency || 60, 10);
+                this.refreshInterval = setInterval(() => this.fetchData(), freq * 1000);
+            }
         });
 
         onWillUnmount(() => {
@@ -33,6 +35,11 @@ export class MachineLiveCharts extends Component {
     }
 
     async fetchData() {
+        if (!this.props.record.resId) {
+            this.state.error = "Please save the machine to view live charts.";
+            return;
+        }
+
         const result = await this.orm.call(
             "mrp.workcenter", 
             "get_live_chart_data", 
@@ -50,13 +57,18 @@ export class MachineLiveCharts extends Component {
     }
 
     updateTimeline(data) {
-        if (!data.length) return;
+        if (!data || !data.length) {
+            this.state.timeline = [];
+            return;
+        }
+        
         const total = data.reduce((acc, curr) => acc + curr.duration, 0);
         this.state.totalDuration = total > 0 ? total : 1;
         
         this.state.timeline = data.map(item => ({
             ...item,
-            widthPct: (item.duration / this.state.totalDuration) * 100
+            widthPct: (item.duration / this.state.totalDuration) * 100,
+            durationMin: Math.round(item.duration / 60)
         }));
     }
 
@@ -73,14 +85,20 @@ export class MachineLiveCharts extends Component {
 
         const ctx = this.canvasRef.el.getContext("2d");
         this.chartInstance = new window.Chart(ctx, {
-            type: 'bar',
+            type: 'line', 
             data: {
                 labels: data.labels,
                 datasets: [
                     {
                         label: 'Good Parts',
                         data: data.production,
-                        backgroundColor: '#28a745',
+                        borderColor: '#28a745',
+                        backgroundColor: 'rgba(40, 167, 69, 0.15)', 
+                        borderWidth: 2,
+                        fill: true, 
+                        tension: 0.3, 
+                        pointRadius: 3, 
+                        pointBackgroundColor: '#28a745',
                         order: 2
                     },
                     {
@@ -89,8 +107,9 @@ export class MachineLiveCharts extends Component {
                         type: 'line',
                         borderColor: '#dc3545',
                         borderWidth: 2,
-                        fill: false,
-                        pointRadius: 0,
+                        borderDash: [5, 5], 
+                        fill: false, 
+                        pointRadius: 0, 
                         order: 1
                     }
                 ]
@@ -100,7 +119,19 @@ export class MachineLiveCharts extends Component {
                 maintainAspectRatio: false,
                 animation: { duration: 0 }, 
                 scales: {
-                    yAxes: [{ ticks: { beginAtZero: true } }]
+                    yAxes: [{ 
+                        ticks: { 
+                            beginAtZero: true 
+                        } 
+                    }]
+                },
+                tooltips: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                hover: {
+                    mode: 'nearest',
+                    intersect: true
                 }
             }
         });
@@ -108,4 +139,7 @@ export class MachineLiveCharts extends Component {
 }
 
 MachineLiveCharts.template = "mes_core.MachineLiveChartsTmpl";
-registry.category("view_widgets").add("machine_live_charts", MachineLiveCharts);
+
+registry.category("view_widgets").add("machine_live_charts", {
+    component: MachineLiveCharts,
+});

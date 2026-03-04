@@ -7,22 +7,22 @@
             </div>
             
             <t t-else="">
+                <div class="mes-chart-container mb-4" style="position: relative; height: 350px; width: 100%;">
+                    <h5 class="mb-2 text-muted">Production Output</h5>
+                    <canvas t-ref="chartCanvas"></canvas>
+                </div>
+
                 <div class="mes-timeline-container mb-4">
                     <h5 class="mb-2 text-muted">Machine State Timeline (Current Shift)</h5>
                     <div class="d-flex w-100 rounded overflow-hidden" style="height: 40px; background-color: #f8f9fa; border: 1px solid #dee2e6;">
                         <t t-foreach="state.timeline" t-as="block" t-key="block_index">
                             <div t-attf-style="width: {{block.widthPct}}%; background-color: {{block.color}};" 
-                                 t-att-title="block.name + ' (' + Math.round(block.duration/60) + ' min)'"
+                                 t-att-title="block.name + ' (' + block.durationMin + ' min)'"
                                  data-bs-toggle="tooltip" 
                                  class="h-100 border-end border-white">
                             </div>
                         </t>
                     </div>
-                </div>
-
-                <div class="mes-chart-container" style="position: relative; height: 350px; width: 100%;">
-                    <h5 class="mb-2 text-muted">Production Output</h5>
-                    <canvas t-ref="chartCanvas"></canvas>
                 </div>
             </t>
         </div>

@@ -457,9 +457,15 @@ class MesWorkcenter(models.Model):
         if not state_tag or not good_count_tag:
             return {'error': 'Tags not configured'}
 
-        events_dict = self.env['mes.signal.event'].search([('machine_id', '=', machine.id)])
-        color_map = {ev.plc_value: ev.event_id.color or '#808080' for ev in events_dict}
-        name_map = {ev.plc_value: ev.event_id.name for ev in events_dict}
+        alarm_tag = machine.get_alarm_tag_name('OEE.nStopRootReason')
+
+        local_evts = self.env['mes.signal.event'].search([('machine_id', '=', machine.id)])
+        name_map = {(ev.tag_name, ev.plc_value): ev.event_id.name for ev in local_evts}
+        color_map = {(ev.tag_name, ev.plc_value): ev.event_id.color or '#808080' for ev in local_evts}
+
+        global_evts = self.env['mes.event'].search([])
+        fallback_name_map = {ge.default_plc_value: ge.name for ge in global_evts}
+        fallback_color_map = {ge.default_plc_value: (ge.color or '#808080') for ge in global_evts}
 
         ts_manager = self.env['mes.timescale.base']
         timeline_data = []
@@ -474,41 +480,59 @@ class MesWorkcenter(models.Model):
             with conn.cursor() as cur:
                 query_timeline = f"""
                     WITH boundary AS (
-                        SELECT GREATEST(time, %s) as time, value, 0::bigint as id 
+                        SELECT GREATEST(time, %s) as time, value, tag_name, 0::bigint as id 
                         FROM telemetry_event
-                        WHERE machine_name = %s AND tag_name = %s AND time < %s 
+                        WHERE machine_name = %s AND time < %s 
                         ORDER BY time DESC, id DESC LIMIT 1
                     ),
                     events AS (
-                        SELECT time, value, id FROM boundary 
+                        SELECT time, value, tag_name, id FROM boundary 
                         UNION ALL
-                        SELECT time, value, id FROM telemetry_event
-                        WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
+                        SELECT time, value, tag_name, id FROM telemetry_event
+                        WHERE machine_name = %s AND time >= %s AND time <= %s
                     ),
                     intervals AS (
                         SELECT time as start_time, 
                                COALESCE(LEAD(time) OVER (ORDER BY time, id), %s) as end_time,
-                               value
+                               value, tag_name
                         FROM events
                     )
-                    SELECT start_time, end_time, value 
+                    SELECT start_time, end_time, value, tag_name 
                     FROM intervals 
                     WHERE start_time < end_time
                 """
                 cur.execute(query_timeline, (
-                    start_time, machine.name, state_tag, start_time,
-                    machine.name, state_tag, start_time, calc_end_time,
+                    start_time, 
+                    machine.name, start_time,
+                    machine.name, start_time, calc_end_time,
                     calc_end_time
                 ))
                 
                 for row in cur.fetchall():
-                    val = row[2]
+                    val = int(row[2]) if row[2] is not None else 0
+                    t_name = row[3]
+                    key = (t_name, val)
+                    
+                    evt_name = name_map.get(key) or fallback_name_map.get(val)
+                    evt_color = color_map.get(key) or fallback_color_map.get(val)
+                    
+                    if not evt_name:
+                        if t_name == state_tag and val == running_plc_value:
+                            evt_name = 'Running'
+                            evt_color = '#28a745'
+                        elif val == 0:
+                            evt_name = 'Ready / Cleared'
+                            evt_color = '#cccccc'
+                        else:
+                            evt_name = f'Code {val}'
+                            evt_color = '#dc3545' if t_name != state_tag else '#ffc107'
+
                     timeline_data.append({
                         'start': row[0].isoformat(),
                         'end': row[1].isoformat(),
                         'duration': (row[1] - row[0]).total_seconds(),
-                        'color': color_map.get(val, '#cccccc'),
-                        'name': name_map.get(val, f'Code {val}')
+                        'color': evt_color,
+                        'name': evt_name
                     })
 
                 prod_agg = "MAX(value) - MIN(value)" if is_cumulative else "SUM(value)"
