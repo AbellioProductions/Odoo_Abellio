@@ -450,24 +450,31 @@ class MesWorkcenter(models.Model):
 
         machine = wc.machine_settings_id
         start_time, shift_end = self.env['mes.shift'].get_current_shift_window()
-        if not start_time:
-            return {'error': 'No active shift'}
-
+        if not start_time: return {'error': 'No active shift'}
         calc_end_time = min(fields.Datetime.now(), shift_end)
-        
-        state_tag, running_plc_value = wc.runtime_event_id.get_mapping_for_machine(machine) if wc.runtime_event_id else (None, None)
-        good_count_tag, is_cumulative = wc.production_count_id.get_count_config_for_machine(machine) if wc.production_count_id else (None, False)
 
-        if not state_tag or not good_count_tag:
-            return {'error': 'Tags not configured'}
+        good_signals = machine.count_tag_ids.filtered(lambda x: x.count_id == wc.production_count_id)
+        good_tags = list(set(good_signals.mapped('tag_name')))
+        tag_is_cum = {sig.tag_name: sig.is_cumulative for sig in good_signals}
+
+        event_signals = machine.event_tag_ids
+        all_event_tags = list(set(event_signals.mapped('tag_name')))
+        
+        state_sig = event_signals.filtered(lambda x: x.event_id == wc.runtime_event_id)
+        state_tag = state_sig[0].tag_name if state_sig else None
+        running_plc_value = state_sig[0].plc_value if state_sig else None
+        
+        if state_tag and state_tag not in all_event_tags:
+            all_event_tags.append(state_tag)
 
         bucket_min = max(1, wc.chart_bucket_minutes)
         bucket_sec = bucket_min * 60
-        ideal_per_bucket = (wc.ideal_capacity_per_min or 0.0) * bucket_min
         total_shift_sec = (calc_end_time - start_time).total_seconds()
         num_intervals = math.ceil(total_shift_sec / bucket_sec) if total_shift_sec > 0 else 1
         
         labels, production_data, ideal_data, bucket_indices = [], [], [], {}
+        ideal_per_bucket = (wc.ideal_capacity_per_min or 0.0) * bucket_min
+
         for i in range(num_intervals + 1):
             b_time = start_time + timedelta(seconds=i * bucket_sec)
             labels.append(b_time.strftime('%H:%M'))
@@ -478,16 +485,22 @@ class MesWorkcenter(models.Model):
         timeline_data = []
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
-                raw_timeline = machine._fetch_timeline_raw(cur, start_time, calc_end_time)
-                timeline_data = self._process_timeline_colors(machine, raw_timeline, state_tag, running_plc_value)
+                if all_event_tags:
+                    raw_timeline = machine._fetch_timeline_raw(cur, start_time, calc_end_time, all_event_tags)
+                    timeline_data = self._process_timeline_colors(machine, raw_timeline, state_tag, running_plc_value)
                 
-                raw_production = machine._fetch_production_chart_raw(cur, good_count_tag, start_time, calc_end_time, bucket_min, is_cumulative)
-                for row in raw_production:
-                    b_time = row[0].replace(tzinfo=None) if row[0].tzinfo else row[0]
-                    if b_time in bucket_indices:
-                        plot_idx = bucket_indices[b_time] + 1 
-                        if plot_idx < len(production_data):
-                            production_data[plot_idx] = float(row[1])
+                if good_tags:
+                    raw_production = machine._fetch_production_chart_raw(cur, good_tags, start_time, calc_end_time, bucket_min)
+                    for row in raw_production:
+                        t_name = row[0]
+                        b_time = row[1].replace(tzinfo=None) if row[1].tzinfo else row[1]
+                        
+                        produced = float(row[3]) if tag_is_cum.get(t_name) else float(row[2])
+                        
+                        if b_time in bucket_indices:
+                            plot_idx = bucket_indices[b_time] + 1 
+                            if plot_idx < len(production_data):
+                                production_data[plot_idx] += produced # Складываем теги вместе!
 
         return {
             'timeline': timeline_data,
@@ -502,9 +515,16 @@ class MesWorkcenter(models.Model):
         }
 
     def _process_timeline_colors(self, machine, raw_timeline, state_tag, running_plc_value):
-        local_evts = self.env['mes.signal.event'].search([('machine_id', '=', machine.id)])
-        name_map = {(ev.tag_name, ev.plc_value): ev.event_id.name for ev in local_evts}
-        color_map = {(ev.tag_name, ev.plc_value): ev.event_id.color or '#808080' for ev in local_evts}
+        name_map = {}
+        color_map = {}
+        
+        for ev in machine.event_tag_ids:
+            key = (ev.tag_name, ev.plc_value)
+            if key in name_map:
+                name_map[key] += " / " + ev.event_id.name
+            else:
+                name_map[key] = ev.event_id.name
+                color_map[key] = ev.event_id.color or '#808080'
 
         global_evts = self.env['mes.event'].search([])
         fallback_name_map = {ge.default_plc_value: ge.name for ge in global_evts}

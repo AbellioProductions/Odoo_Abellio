@@ -2,6 +2,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 from odoo import models, fields, api
+from odoo.exceptions import ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -276,10 +277,10 @@ class MesMachineSettings(models.Model):
                 ORDER BY time DESC LIMIT 1
             ),
             alarm_events AS (
-                SELECT GREATEST(time, %s) as time, value, id FROM alarm_boundary
+                SELECT GREATEST(time, %s) as time, value, id FROM alarm_boundary WHERE tag_name = %s
                 UNION ALL
                 SELECT time, value, id FROM telemetry_event
-                WHERE machine_name = %s AND tag_name LIKE %s AND time >= %s AND time <= %s
+                WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
             ),
             alarm_durations AS (
                 SELECT value as alarm_code, EXTRACT(EPOCH FROM (COALESCE(LEAD(time) OVER (ORDER BY time, id), %s) - time)) as duration_sec
@@ -293,7 +294,7 @@ class MesMachineSettings(models.Model):
 
         cursor.execute(query, (
             self.name, start_time,
-            start_time, self.name, alarm_tag, start_time, end_time, 
+            start_time, alarm_tag, self.name, alarm_tag, start_time, end_time, 
             end_time
         ))
         return cursor.fetchall()
@@ -311,7 +312,8 @@ class MesMachineSettings(models.Model):
 
         return {row[0]: {'sum': float(row[1]), 'cum': float(row[2])} for row in cursor.fetchall()}
 
-    def _fetch_timeline_raw(self, cursor, start_time, end_time):
+    def _fetch_timeline_raw(self, cursor, start_time, end_time, event_tags):
+        if not event_tags: return []
         query = """
             WITH boundary AS (
                 SELECT time as time, value, tag_name, 0::bigint as id 
@@ -320,7 +322,7 @@ class MesMachineSettings(models.Model):
                 ORDER BY time DESC, id DESC LIMIT 1
             ),
             events AS (
-                SELECT GREATEST(time, %s), value, tag_name, id FROM boundary 
+                SELECT GREATEST(time, %s) as time, value, tag_name, id FROM boundary 
                 UNION ALL
                 SELECT time, value, tag_name, id FROM telemetry_event
                 WHERE machine_name = %s AND time >= %s AND time <= %s
@@ -336,22 +338,23 @@ class MesMachineSettings(models.Model):
             WHERE start_time < end_time
         """
         cursor.execute(query, (
-            start_time, self.name, start_time,
-            self.name, start_time, end_time,
+            self.name, start_time,
+            start_time, self.name, start_time, end_time,
             end_time
         ))
         return cursor.fetchall()
 
-    def _fetch_production_chart_raw(self, cursor, tag_name, start_time, end_time, bucket_min, is_cumulative):
-        prod_agg = "MAX(value) - MIN(value)" if is_cumulative else "SUM(value)"
+    def _fetch_production_chart_raw(self, cursor, tag_names, start_time, end_time, bucket_min):
+        if not tag_names: return []
         query = f"""
-            SELECT time_bucket('{bucket_min} minutes', time) AS bucket,
-                   COALESCE({prod_agg}, 0) as produced
+            SELECT tag_name, time_bucket('{bucket_min} minutes', time) AS bucket,
+                   COALESCE(SUM(value), 0) as sum_val,
+                   COALESCE(MAX(value) - MIN(value), 0) as cum_val
             FROM telemetry_count
-            WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
-            GROUP BY bucket ORDER BY bucket
+            WHERE machine_name = %s AND tag_name = ANY(%s) AND time >= %s AND time <= %s
+            GROUP BY tag_name, bucket ORDER BY bucket
         """
-        cursor.execute(query, (self.name, tag_name, start_time, end_time))
+        cursor.execute(query, (self.name, tag_names, start_time, end_time))
         return cursor.fetchall()
 
     def _calculate_kpi(self, total_running_sec, total_produced, total_planned_runtime_sec, workcenter):
@@ -585,7 +588,7 @@ class MesSignalBase(models.AbstractModel):
 
     tag_name = fields.Char(string='Signal Tag', required=True)
     poll_type = fields.Selection([('cyclic', 'Cyclic'), ('on_change', 'On Change')], default='cyclic', required=True)
-    poll_frequency = fields.Integer(string='Freq (ms)', default=1000)
+    poll_frequency = fields.Integer(string='Freq (ms)', default=10000)
     param_type = fields.Selection([
         ('auto', 'Auto'), ('bool', 'Boolean'), ('int', 'Integer'),
         ('double', 'Double/Real'), ('string', 'String')
@@ -622,8 +625,7 @@ class MesSignalCount(models.Model):
     is_cumulative = fields.Boolean(string='Cumulative (MAX-MIN)', default=False)
 
     _sql_constraints = [
-        ('tag_uniq', 'unique(machine_id, tag_name)', 'Count Tag must be unique for this machine!'),
-        ('dict_uniq', 'unique(machine_id, count_id)', 'This dictionary count is already added for this machine!')
+        ('tag_count_uniq', 'unique(machine_id, tag_name, count_id)', 'This exact Tag to Count mapping already exists!')
     ]
 
     def unlink(self):
@@ -643,13 +645,14 @@ class MesSignalEvent(models.Model):
     _description = 'Event Signals'
     _signal_type = 'event'
 
+    poll_type = fields.Selection(selection_add=[], default='on_change')
+
     machine_id = fields.Many2one('mes.machine.settings', string='Machine', required=True, ondelete='cascade')
     event_id = fields.Many2one('mes.event', string='Dictionary Event', required=True)
     plc_value = fields.Integer(string='PLC Value', required=True)
 
     _sql_constraints = [
-        ('tag_val_uniq', 'unique(machine_id, tag_name, plc_value)', 'Tag + Value pair already exists for this machine!'),
-        ('dict_uniq', 'unique(machine_id, event_id)', 'This dictionary event is already configured for this machine!')
+        ('tag_val_event_uniq', 'unique(machine_id, tag_name, plc_value, event_id)', 'This exact Tag+Value to Event mapping already exists!')
     ]
 
     def unlink(self):
@@ -674,8 +677,7 @@ class MesSignalProcess(models.Model):
     process_id = fields.Many2one('mes.process', string='Dictionary Process', required=True)
 
     _sql_constraints = [
-        ('tag_uniq', 'unique(machine_id, tag_name)', 'Process Tag must be unique for this machine!'),
-        ('dict_uniq', 'unique(machine_id, process_id)', 'This dictionary process is already added for this machine!')
+        ('tag_process_uniq', 'unique(machine_id, tag_name, process_id)', 'This exact Tag to Process mapping already exists!')
     ]
 
     def unlink(self):
@@ -692,7 +694,7 @@ class MesWasteLossStat(models.TransientModel):
     waste_sum = fields.Float(string='Shift Total (pcs)')
     waste_per_hour = fields.Float(string='Waste per Hour (pcs/h)')
 
-
+    @api.model
     def _generate_stats(self, machine_id):
         machine = self.env['mes.machine.settings'].browse(machine_id)
         if not machine.exists(): return
@@ -704,40 +706,39 @@ class MesWasteLossStat(models.TransientModel):
         workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
         active_intervals, _ = machine._get_planned_working_intervals(start_time, shift_end, workcenter)
         
-        all_counts = self.env['mes.signal.count'].search([('machine_id', '=', machine.id)])
-        good_tag, _ = workcenter.production_count_id.get_count_config_for_machine(machine) if workcenter and workcenter.production_count_id else (False, False)
-        state_tag, running_plc_value = workcenter.runtime_event_id.get_mapping_for_machine(machine) if workcenter and workcenter.runtime_event_id else (False, False)
+        state_sig = machine.event_tag_ids.filtered(lambda x: x.event_id == workcenter.runtime_event_id)
+        state_tag = state_sig[0].tag_name if state_sig else None
+        running_plc_value = state_sig[0].plc_value if state_sig else 0
 
         vals_list = []
-        
-        ts_manager = self.env['mes.timescale.base']
-        with ts_manager._connection() as conn:
+        with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
-                total_running_sec = 0.0
-                if state_tag:
-                    total_running_sec = machine._fetch_active_runtime(cur, state_tag, running_plc_value, active_intervals)
-                
+                total_running_sec = machine._fetch_active_runtime(cur, state_tag, running_plc_value, active_intervals) if state_tag else 0.0
                 hours_run = (total_running_sec / 3600.0) if total_running_sec > 0 else 0.0
 
                 raw_counts = machine._fetch_waste_stats_raw(cur, start_time, calc_end_time)
-
-                for count_def in all_counts:
-                    if good_tag and count_def.tag_name == good_tag:
+                
+                # Складываем разные теги в единый Dictionary Count
+                waste_by_dict = {}
+                for count_def in machine.count_tag_ids:
+                    # Игнорируем теги, которые идут в Good Parts
+                    if workcenter and count_def.count_id == workcenter.production_count_id:
                         continue
                         
-                    tag_name = count_def.tag_name
-                    is_cum = count_def.is_cumulative
+                    tag_data = raw_counts.get(count_def.tag_name, {'sum': 0.0, 'cum': 0.0})
+                    waste_val = tag_data.get('cum') if count_def.is_cumulative else tag_data.get('sum')
                     
-                    tag_data = raw_counts.get(tag_name, {'sum': 0.0, 'cum': 0.0})
-                    waste_sum = tag_data.get('cum') if is_cum else tag_data.get('sum')
-                    
-                    if waste_sum > 0:
-                        vals_list.append({
-                            'machine_id': machine.id,
-                            'name': count_def.count_id.name if count_def.count_id else tag_name,
-                            'waste_sum': waste_sum,
-                            'waste_per_hour': (waste_sum / hours_run) if hours_run > 0 else 0.0
-                        })
+                    if waste_val > 0:
+                        dict_name = count_def.count_id.name if count_def.count_id else count_def.tag_name
+                        waste_by_dict[dict_name] = waste_by_dict.get(dict_name, 0.0) + waste_val
+                
+                for name, val in waste_by_dict.items():
+                    vals_list.append({
+                        'machine_id': machine.id,
+                        'name': name,
+                        'waste_sum': val,
+                        'waste_per_hour': (val / hours_run) if hours_run > 0 else 0.0
+                    })
                     
         if vals_list:
             self.with_context(skip_generation=True).create(vals_list)
@@ -755,8 +756,8 @@ class MesDowntimeLossStat(models.TransientModel):
     time_per_hour = fields.Float(string='Time per Hour (min/h)')
 
 
+    @api.model
     def _generate_stats(self, machine_id):
-        _logger.info(f"Starting generation of downtime loss stats for machine ID: {machine_id}")
         machine = self.env['mes.machine.settings'].browse(machine_id)
         if not machine.exists(): return
         
@@ -766,34 +767,47 @@ class MesDowntimeLossStat(models.TransientModel):
         
         workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
         active_intervals, _ = machine._get_planned_working_intervals(start_time, shift_end, workcenter)
-        state_tag, running_plc_value = workcenter.runtime_event_id.get_mapping_for_machine(machine) if workcenter and workcenter.runtime_event_id else (False, False)
+        
+        state_sig = machine.event_tag_ids.filtered(lambda x: x.event_id == workcenter.runtime_event_id)
+        state_tag = state_sig[0].tag_name if state_sig else None
+        running_plc_value = state_sig[0].plc_value if state_sig else 0
+
+        all_event_tags = list(set(machine.event_tag_ids.mapped('tag_name')))
         
         vals_list = []
-
-        ts_manager = self.env['mes.timescale.base']
-        with ts_manager._connection() as conn:
+        with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
-                total_running_sec = 0.0
-                if state_tag:
-                    total_running_sec = machine._fetch_active_runtime(cur, state_tag, running_plc_value, active_intervals)
-                        
+                total_running_sec = machine._fetch_active_runtime(cur, state_tag, running_plc_value, active_intervals) if state_tag else 0.0
                 hours_run = (total_running_sec / 3600.0) if total_running_sec > 0 else 0.0
                 
-                rows = machine._fetch_downtime_stats_raw(cur, start_time, calc_end_time)
+                rows = machine._fetch_downtime_stats_raw(cur, start_time, calc_end_time, all_event_tags)
                 
+                stats_by_event = {}
                 for row in rows:
-                    alarm_code, freq, duration_sec = row[0], (row[1] or 0), (row[2] or 0.0)
-                    duration_min = duration_sec / 60.0
+                    tag_name, alarm_code, freq, duration_sec = row[0], row[1], row[2], row[3]
                     
-                    if duration_min > 0 or freq > 0:
-                        alarm_name = machine.resolve_plc_value_to_name(alarm_code)
+                    matched_signals = machine.event_tag_ids.filtered(lambda x: x.tag_name == tag_name and x.plc_value == alarm_code)
+                    
+                    if not matched_signals:
+                        continue
+                        
+                    for sig in matched_signals:
+                        evt_name = sig.event_id.name
+                        if evt_name not in stats_by_event:
+                            stats_by_event[evt_name] = {'freq': 0, 'dur': 0.0}
+                        stats_by_event[evt_name]['freq'] += freq
+                        stats_by_event[evt_name]['dur'] += duration_sec
+                
+                for evt_name, data in stats_by_event.items():
+                    dur_min = data['dur'] / 60.0
+                    if dur_min > 0 or data['freq'] > 0:
                         vals_list.append({
                             'machine_id': machine.id,
-                            'name': alarm_name,
-                            'frequency': freq,
-                            'freq_per_hour': (freq / hours_run) if hours_run > 0 else 0.0,
-                            'total_time': duration_min,
-                            'time_per_hour': (duration_min / hours_run) if hours_run > 0 else 0.0
+                            'name': evt_name,
+                            'frequency': data['freq'],
+                            'freq_per_hour': (data['freq'] / hours_run) if hours_run > 0 else 0.0,
+                            'total_time': dur_min,
+                            'time_per_hour': (dur_min / hours_run) if hours_run > 0 else 0.0
                         })
         
         if vals_list:
