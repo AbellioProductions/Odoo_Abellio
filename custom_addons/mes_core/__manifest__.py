@@ -10,6 +10,14 @@
         'security/ir.model.access.csv',
 
         'data/mes_cron.xml',
+
+        'wizard/dictionary_import_wizard.xml',
+        'wizard/raw_data_csv_import_wizard.xml',
+
+        'wizard/mes_downtime_planner.xml',
+
+        'wizard/mes_analytics_report.xml',
+        'wizard/mes_alarm_report.xml',
         
         'views/mes_dictionaries_views.xml',
         'views/mes_machine_performance_view.xml',
@@ -24,11 +32,7 @@
         'views/mes_machine_settings_views.xml',
         'views/mes_report_base_views.xml',
 
-        'wizard/dictionary_import_wizard.xml',
-        'wizard/raw_data_csv_import_wizard.xml',
-
-        'wizard/mes_analytics_report.xml',
-        'wizard/mes_alarm_report.xml',
+        
 
         'views/mes_menus.xml',
     ],

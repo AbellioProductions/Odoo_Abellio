@@ -48,6 +48,10 @@ access_mes_alarm_rep_adm,mes.alarm.rep.adm,model_mes_alarm_report_line,mes_core.
 access_mes_base_wiz_adm,mes.base.wiz.adm,model_mes_report_base_wizard,mes_core.group_mes_administrator,1,1,1,1
 
 
+access_mes_downtime_planner_wizard_adm,mes.downtime.planner.wizard.adm,model_mes_downtime_planner_wizard,mes_core.group_mes_administrator,1,1,1,1
+
+
+
 
 access_mes_shift_manager,mes.shift.manager,model_mes_shift,mes_core.group_mes_manager,1,0,0,0
 access_mes_defect_manager,mes.defect.manager,model_mes_defect,mes_core.group_mes_manager,1,0,0,0
@@ -95,6 +99,8 @@ access_mes_analytics_rep_mgr,mes.analytics.rep.mgr,model_mes_analytics_report_li
 access_mes_alarm_wiz_mgr,mes.alarm.wiz.mgr,model_mes_alarm_report_wizard,mes_core.group_mes_manager,1,1,1,1
 access_mes_alarm_rep_mgr,mes.alarm.rep.mgr,model_mes_alarm_report_line,mes_core.group_mes_manager,1,1,1,1
 access_mes_base_wiz_mgr,mes.base.wiz.mgr,model_mes_report_base_wizard,mes_core.group_mes_manager,1,1,1,1
+
+access_mes_downtime_planner_wizard_mgr,mes.downtime.planner.wizard.mgr,model_mes_downtime_planner_wizard,mes_core.group_mes_manager,1,1,1,1
 
 
 

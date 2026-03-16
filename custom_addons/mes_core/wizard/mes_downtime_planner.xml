@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_mes_downtime_planner_wizard" model="ir.ui.view">
+        <field name="name">mes.downtime.planner.wizard.form</field>
+        <field name="model">mes.downtime.planner.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Plan Downtime">
+                <sheet>
+                    <div class="row">
+                        <div class="col-4">
+                            <h2>1. Select Date</h2>
+                            <group>
+                                <field name="selected_date" widget="date" nolabel="1"/>
+                            </group>
+                            
+                            <h2 class="mt-4">2. Select Time</h2>
+                            <group>
+                                <field name="creation_mode" widget="radio" options="{'horizontal': false}" nolabel="1"/>
+                            </group>
+                            
+                            <group invisible="creation_mode != 'shift'">
+                                <field name="shift_id" widget="radio" nolabel="1" required="creation_mode == 'shift'"/>
+                            </group>
+                            
+                            <group invisible="creation_mode != 'custom'">
+                                <field name="custom_start" required="creation_mode == 'custom'"/>
+                                <field name="custom_end" required="creation_mode == 'custom'"/>
+                            </group>
+                        </div>
+                        
+                        <div class="col-8">
+                            <h2>Existing Downtimes on Selected Date</h2>
+                            <field name="existing_downtime_ids" nolabel="1" readonly="1">
+                                <tree>
+                                    <field name="start_time" string="Start"/>
+                                    <field name="end_time" string="End"/>
+                                    <field name="machine_id" string="Mac."/>
+                                    <field name="rule_id" string="Reason"/>
+                                </tree>
+                            </field>
+                        </div>
+                    </div>
+                </sheet>
+                <footer>
+                    <button name="action_continue_to_rule" string="Add / Create Rule" type="object" class="btn-primary" icon="fa-arrow-right"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_mes_downtime_planner" model="ir.actions.act_window">
+        <field name="name">Plan New Downtime</field>
+        <field name="res_model">mes.downtime.planner.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

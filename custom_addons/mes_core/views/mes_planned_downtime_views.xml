@@ -21,7 +21,7 @@
                         </group>
                     </group>
                     
-                    <group invisible="rule_type != 'daily'">
+                    <!--<group invisible="rule_type != 'daily'">
                         <field name="daily_start" widget="float_time"/>
                         <field name="daily_end" widget="float_time"/>
                     </group>
@@ -31,9 +31,9 @@
                         <field name="weekend_start_time" widget="float_time"/>
                         <field name="weekend_end_day"/>
                         <field name="weekend_end_time" widget="float_time"/>
-                    </group>
+                    </group>-->
                     
-                    <group invisible="rule_type != 'one_time'">
+                    <group>
                         <field name="date_start"/>
                         <field name="date_end"/>
                     </group>
@@ -47,6 +47,13 @@
         <field name="model">mes.planned.downtime</field>
         <field name="arch" type="xml">
             <tree>
+                <header>
+                    <button name="%(mes_core.action_mes_downtime_planner)d" 
+                            type="action" 
+                            string="Plan New Downtime" 
+                            class="oe_highlight" 
+                            display="always"/>
+                </header>
                 <field name="name"/>
                 <field name="rule_type"/>
                 <field name="machine_ids" widget="many2many_tags"/>
