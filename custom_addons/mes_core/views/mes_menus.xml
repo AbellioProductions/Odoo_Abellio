@@ -110,6 +110,12 @@
               parent="menu_mes_catalogues" 
               action="action_mes_event" 
               sequence="45"/> 
+
+    <menuitem id="menu_mes_process" 
+              name="Processes" 
+              parent="menu_mes_catalogues" 
+              action="action_mes_process" 
+              sequence="50"/>
               
     <menuitem id="menu_mes_planned_downtime" 
               name="Planned Downtime Rules" 

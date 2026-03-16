@@ -442,7 +442,7 @@ class MesWorkcenter(models.Model):
                 raise ValidationError('Configuration error: Refresh frequency cannot be less than 10 seconds.')
             
     @api.model
-    def get_live_chart_data(self, workcenter_id, selected_count_id=False):
+    def get_live_chart_data(self, workcenter_id, selected_count_id=False, selected_process_id=False):
         import math
         from datetime import timedelta
 
@@ -494,12 +494,22 @@ class MesWorkcenter(models.Model):
             if sc['tag'] not in all_event_tags:
                 all_event_tags.append(sc['tag'])
 
+        available_processes = []
+        all_processes = self.env['mes.process'].search([])
+        for p in all_processes:
+            ptag = p.get_tag_for_machine(machine)
+            if ptag:
+                available_processes.append({'id': p.id, 'name': p.complete_name or p.name})
+
+        target_process_id = self.env['mes.process'].browse(int(selected_process_id)) if selected_process_id else False
+        process_tag = target_process_id.get_tag_for_machine(machine) if target_process_id else False
+
         bucket_min = max(1, wc.chart_bucket_minutes)
         bucket_sec = bucket_min * 60
         total_shift_sec = (calc_end_time - start_time).total_seconds()
         num_intervals = math.ceil(total_shift_sec / bucket_sec) if total_shift_sec > 0 else 1
         
-        labels, production_data, ideal_data, bucket_indices = [], [], [], {}
+        labels, production_data, ideal_data, process_data, bucket_indices = [], [], [], [], {}
         ideal_per_bucket = (wc.ideal_capacity_per_min or 0.0) * bucket_min
 
         for i in range(num_intervals + 1):
@@ -507,6 +517,7 @@ class MesWorkcenter(models.Model):
             labels.append(b_time.strftime('%H:%M'))
             production_data.append(0.0)
             ideal_data.append(ideal_per_bucket if i > 0 else 0.0) 
+            process_data.append(None)
             bucket_indices[b_time] = i
 
         timeline_data = []
@@ -528,6 +539,23 @@ class MesWorkcenter(models.Model):
                             if plot_idx < len(production_data):
                                 production_data[plot_idx] += produced
 
+                if process_tag:
+                    cur.execute("""
+                        SELECT time_bucket(%s * interval '1 second', time) AS bucket, AVG(value)
+                        FROM telemetry_process
+                        WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
+                        GROUP BY bucket
+                        ORDER BY bucket
+                    """, (bucket_sec, machine.name, process_tag, start_time, calc_end_time))
+                    
+                    for row in cur.fetchall():
+                        b_time = row[0].replace(tzinfo=None) if row[0].tzinfo else row[0]
+                        avg_val = float(row[1])
+                        if b_time in bucket_indices:
+                            plot_idx = bucket_indices[b_time] + 1
+                            if plot_idx < len(process_data):
+                                process_data[plot_idx] = avg_val
+
         return {
             'timeline': timeline_data,
             'chart_duration_sec': num_intervals * bucket_sec,
@@ -535,10 +563,14 @@ class MesWorkcenter(models.Model):
             'available_counts': available_counts,
             'selected_count_id': target_count_id.id if target_count_id else False,
             'selected_count_name': target_count_id.name if target_count_id else 'Data',
+            'available_processes': available_processes,
+            'selected_process_id': target_process_id.id if target_process_id else False,
+            'selected_process_name': target_process_id.complete_name if target_process_id else '',
             'chart': {
                 'labels': labels,
                 'production': production_data,
                 'ideal': ideal_data,
+                'process': process_data,
                 'bucket_sec': bucket_sec,
                 'show_ideal': show_ideal_line
             }

@@ -20,7 +20,10 @@ export class MachineLiveCharts extends Component {
             panOffset: 0,
             availableCounts: [],
             selectedCountId: false,
-            selectedCountName: 'Good Parts'
+            selectedCountName: 'Good Parts',
+            availableProcesses: [],
+            selectedProcessId: false,
+            selectedProcessName: ''
         });
 
         onMounted(async () => {
@@ -53,7 +56,11 @@ export class MachineLiveCharts extends Component {
         const result = await this.orm.call(
             "mrp.workcenter", 
             "get_live_chart_data", 
-            [this.props.record.resId, this.state.selectedCountId || false]
+            [
+                this.props.record.resId, 
+                this.state.selectedCountId || false,
+                this.state.selectedProcessId || false
+            ]
         );
 
         if (result.error) {
@@ -63,15 +70,31 @@ export class MachineLiveCharts extends Component {
 
         this.state.error = false;
         this.rawData = result;
+        
         this.state.availableCounts = result.available_counts;
         this.state.selectedCountId = result.selected_count_id;
         this.state.selectedCountName = result.selected_count_name;
+
+        if (result.available_processes) {
+            this.state.availableProcesses = result.available_processes;
+        }
+        if (result.selected_process_id) {
+            this.state.selectedProcessId = result.selected_process_id;
+            this.state.selectedProcessName = result.selected_process_name;
+        }
         
         this.applyZoomAndPan(); 
     }
 
     async onCountChange(ev) {
         this.state.selectedCountId = parseInt(ev.target.value);
+        await this.fetchData();
+    }
+
+    async onProcessChange(ev) {
+        const val = ev.target.value;
+        this.state.selectedProcessId = val ? parseInt(val) : false;
+        this.state.selectedProcessName = val ? ev.target.options[ev.target.selectedIndex].text : '';
         await this.fetchData();
     }
 
@@ -124,7 +147,8 @@ export class MachineLiveCharts extends Component {
             labels: this.rawData.chart.labels.slice(startIdx, endIdx + 1),
             production: this.rawData.chart.production.slice(startIdx, endIdx + 1),
             ideal: this.rawData.chart.ideal.slice(startIdx, endIdx + 1),
-            show_ideal: this.rawData.chart.show_ideal
+            show_ideal: this.rawData.chart.show_ideal,
+            process: this.rawData.chart.process ? this.rawData.chart.process.slice(startIdx, endIdx + 1) : null
         };
 
         this.updateChart(slicedData);
@@ -159,30 +183,7 @@ export class MachineLiveCharts extends Component {
             pointRadius: 0,
             order: 1
         };
-        
-        if (this.chartInstance) {
-            this.chartInstance.data.labels = data.labels;
-            this.chartInstance.data.datasets[0].data = data.production;
-            this.chartInstance.data.datasets[0].label = this.state.selectedCountName;
-            
-            if (data.show_ideal) {
-                if (this.chartInstance.data.datasets.length === 1) {
-                    this.chartInstance.data.datasets.push(idealDataset);
-                } else {
-                    this.chartInstance.data.datasets[1].data = data.ideal;
-                }
-            } else {
-                if (this.chartInstance.data.datasets.length > 1) {
-                    this.chartInstance.data.datasets.pop();
-                }
-            }
-            
-            this.chartInstance.update();
-            return;
-        }
 
-        const ctx = this.canvasRef.el.getContext("2d");
-        
         const alignTimeline = (chart) => {
             const chartArea = chart.chartArea;
             const canvas = chart.canvas || (chart.chart && chart.chart.canvas);
@@ -195,22 +196,99 @@ export class MachineLiveCharts extends Component {
                 wrapper.style.width = (chartArea.right - chartArea.left) + 'px';
             }
         };
+        
+        if (this.chartInstance) {
+            this.chartInstance.data.labels = data.labels;
+            this.chartInstance.data.datasets[0].data = data.production;
+            this.chartInstance.data.datasets[0].label = this.state.selectedCountName;
+
+            let currentDatasetIndex = 1;
+
+            if (data.show_ideal) {
+                if (this.chartInstance.data.datasets.length <= currentDatasetIndex) {
+                    this.chartInstance.data.datasets.push(idealDataset);
+                } else {
+                    this.chartInstance.data.datasets[currentDatasetIndex] = idealDataset;
+                }
+                currentDatasetIndex++;
+            }
+
+            if (this.state.selectedProcessName && data.process) {
+                const processDataset = {
+                    label: this.state.selectedProcessName,
+                    data: data.process,
+                    yAxisID: 'y-axis-process',
+                    borderColor: '#dc3545',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    fill: false,
+                    steppedLine: true,
+                    lineTension: 0,
+                    tension: 0,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#dc3545',
+                    order: 1
+                };
+
+                if (this.chartInstance.data.datasets.length <= currentDatasetIndex) {
+                    this.chartInstance.data.datasets.push(processDataset);
+                } else {
+                    this.chartInstance.data.datasets[currentDatasetIndex] = processDataset;
+                }
+                currentDatasetIndex++;
+            }
+
+            while (this.chartInstance.data.datasets.length > currentDatasetIndex) {
+                this.chartInstance.data.datasets.pop();
+            }
+            
+            this.chartInstance.options.animation = {
+                duration: 0,
+                onComplete: function() { alignTimeline(this); },
+                onProgress: function() { alignTimeline(this); }
+            };
+            
+            this.chartInstance.update();
+            return;
+        }
+
+        const ctx = this.canvasRef.el.getContext("2d");
 
         const datasets = [{
             label: this.state.selectedCountName,
             data: data.production,
+            yAxisID: 'y-axis-count',
             borderColor: '#28a745',
             backgroundColor: 'rgba(40, 167, 69, 0.15)',
             borderWidth: 2,
             fill: true,
-            tension: 0.3,
+            tension: 0.3, // У Count остается плавность
             pointRadius: 3,
             pointBackgroundColor: '#28a745',
             order: 2
         }];
 
         if (data.show_ideal) {
+            idealDataset.yAxisID = 'y-axis-count';
             datasets.push(idealDataset);
+        }
+
+        if (this.state.selectedProcessName && data.process) {
+            datasets.push({
+                label: this.state.selectedProcessName,
+                data: data.process,
+                yAxisID: 'y-axis-process',
+                borderColor: '#dc3545',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                fill: false,
+                steppedLine: true,
+                lineTension: 0,
+                tension: 0,
+                pointRadius: 3,
+                pointBackgroundColor: '#dc3545',
+                order: 1
+            });
         }
 
         this.chartInstance = new window.Chart(ctx, {
@@ -228,7 +306,19 @@ export class MachineLiveCharts extends Component {
                     onProgress: function() { alignTimeline(this); }
                 }, 
                 scales: {
-                    yAxes: [{ ticks: { beginAtZero: true } }],
+                    yAxes: [
+                        {
+                            id: 'y-axis-count',
+                            position: 'left',
+                            ticks: { beginAtZero: true }
+                        },
+                        {
+                            id: 'y-axis-process',
+                            position: 'right',
+                            ticks: { beginAtZero: true },
+                            gridLines: { drawOnChartArea: false }
+                        }
+                    ],
                     xAxes: [{ ticks: { maxRotation: 45, minRotation: 45 } }]
                 },
                 tooltips: { mode: 'index', intersect: false },

@@ -12,6 +12,7 @@ class MesTelemetryImportAPI(http.Controller):
         data = request.params
         events = data.get('events', [])
         counts = data.get('counts', [])
+        processes = data.get('processes', [])
         
         ts_manager = request.env['mes.timescale.base']
         
@@ -34,11 +35,20 @@ class MesTelemetryImportAPI(http.Controller):
                             ON CONFLICT (time, machine_name, tag_name) DO NOTHING;
                         """
                         psycopg2.extras.execute_values(cur, query_counts, counts, page_size=10000)
+
+                    if processes:
+                        query_processes = """
+                            INSERT INTO telemetry_process (time, arrived_time, machine_name, tag_name, value) 
+                            VALUES %s 
+                            ON CONFLICT (time, machine_name, tag_name) DO NOTHING;
+                        """
+                        psycopg2.extras.execute_values(cur, query_processes, processes, page_size=10000)
             
             return {
                 'status': 'success', 
                 'events_received': len(events), 
-                'counts_received': len(counts)
+                'counts_received': len(counts),
+                'processes_received': len(processes)
             }
             
         except Exception as e:

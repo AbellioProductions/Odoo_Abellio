@@ -9,20 +9,44 @@
             <t t-else="">
                 <div class="d-flex justify-content-between align-items-center mb-2 bg-light p-2 rounded border">
                     
-                    <h5 class="mb-0 ms-2 d-flex align-items-center">
-                        <i class="fa fa-line-chart me-2 text-muted"/>
-                        <select class="form-select border-0 bg-transparent text-dark fw-bold p-0 pe-4" 
-                                style="font-size: 1.1rem; cursor: pointer; box-shadow: none; width: auto;" 
-                                t-on-change="onCountChange"
-                                t-att-disabled="state.availableCounts.length === 0">
-                            <t t-if="state.availableCounts.length === 0">
-                                <option>No variables mapped</option>
-                            </t>
-                            <t t-foreach="state.availableCounts" t-as="c" t-key="c.id">
-                                <option t-att-value="c.id" t-att-selected="c.id == state.selectedCountId"><t t-esc="c.name"/></option>
-                            </t>
-                        </select>
-                    </h5>
+                    <div class="d-flex align-items-center ms-2 gap-3">
+                        
+                        <div class="d-flex align-items-center">
+                            <i class="fa fa-line-chart me-2 text-muted" title="Count Metric"/>
+                            <select class="form-select border-0 bg-transparent text-dark fw-bold p-0 pe-4 shadow-none o_mes_count_select" 
+                                    style="font-size: 1.1rem; cursor: pointer; width: auto;" 
+                                    t-on-change="onCountChange"
+                                    t-att-disabled="state.availableCounts.length === 0">
+                                <t t-if="state.availableCounts.length === 0">
+                                    <option value="">No count...</option>
+                                </t>
+                                <t t-foreach="state.availableCounts" t-as="c" t-key="c.id">
+                                    <option t-att-value="c.id" t-att-selected="c.id == state.selectedCountId">
+                                        <t t-esc="c.name"/>
+                                    </option>
+                                </t>
+                            </select>
+                        </div>
+
+                        <div class="border-start border-secondary opacity-25" style="height: 24px;"></div>
+
+                        <div class="d-flex align-items-center">
+                            <i class="fa fa-thermometer-half me-2 text-muted" title="Process Metric"/>
+                            <select class="form-select border-0 bg-transparent text-dark fw-bold p-0 pe-4 shadow-none o_mes_process_select" 
+                                    style="font-size: 1.1rem; cursor: pointer; width: auto;" 
+                                    t-on-change="onProcessChange"
+                                    t-att-disabled="!state.availableProcesses || state.availableProcesses.length === 0">
+                                <option value="">No Process...</option>
+                                <t t-if="state.availableProcesses">
+                                    <t t-foreach="state.availableProcesses" t-as="p" t-key="p.id">
+                                        <option t-att-value="p.id" t-att-selected="p.id == state.selectedProcessId">
+                                            <t t-esc="p.name"/>
+                                        </option>
+                                    </t>
+                                </t>
+                            </select>
+                        </div>
+                    </div>
 
                     <div class="d-flex align-items-center gap-4 me-2">
                         <div class="d-flex align-items-center" title="Scroll mouse wheel on chart to zoom">
