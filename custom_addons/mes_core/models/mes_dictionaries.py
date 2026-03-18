@@ -509,15 +509,15 @@ class MesWorkcenter(models.Model):
         total_shift_sec = (calc_end_time - start_time).total_seconds()
         num_intervals = math.ceil(total_shift_sec / bucket_sec) if total_shift_sec > 0 else 1
         
-        labels, production_data, ideal_data, process_data, bucket_indices = [], [], [], [], {}
+        labels, production_data, ideal_data, bucket_indices = [], [], [], {}
+        process_data = None
         ideal_per_bucket = (wc.ideal_capacity_per_min or 0.0) * bucket_min
 
         for i in range(num_intervals + 1):
             b_time = start_time + timedelta(seconds=i * bucket_sec)
-            labels.append(b_time.strftime('%H:%M'))
+            labels.append(b_time.isoformat()) 
             production_data.append(0.0)
             ideal_data.append(ideal_per_bucket if i > 0 else 0.0) 
-            process_data.append(None)
             bucket_indices[b_time] = i
 
         timeline_data = []
@@ -540,21 +540,29 @@ class MesWorkcenter(models.Model):
                                 production_data[plot_idx] += produced
 
                 if process_tag:
-                    cur.execute("""
-                        SELECT time_bucket(%s * interval '1 second', time) AS bucket, AVG(value)
-                        FROM telemetry_process
-                        WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
-                        GROUP BY bucket
-                        ORDER BY bucket
-                    """, (bucket_sec, machine.name, process_tag, start_time, calc_end_time))
+                    query = """
+                        SELECT time, value FROM (
+                            (SELECT time, value
+                             FROM telemetry_process
+                             WHERE machine_name = %s AND tag_name = %s AND time < %s
+                             ORDER BY time DESC LIMIT 1)
+                            UNION ALL
+                            (SELECT time, value
+                             FROM telemetry_process
+                             WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
+                             ORDER BY time ASC)
+                        ) sub ORDER BY time ASC
+                    """
+                    cur.execute(query, (machine.name, process_tag, start_time, machine.name, process_tag, start_time, calc_end_time))
                     
+                    process_data = []
                     for row in cur.fetchall():
-                        b_time = row[0].replace(tzinfo=None) if row[0].tzinfo else row[0]
-                        avg_val = float(row[1])
-                        if b_time in bucket_indices:
-                            plot_idx = bucket_indices[b_time] + 1
-                            if plot_idx < len(process_data):
-                                process_data[plot_idx] = avg_val
+                        t_iso = row[0].isoformat()
+                        val = float(row[1])
+                        process_data.append({'x': t_iso, 'y': val})
+                    
+                    if process_data and process_data[0]['x'] < start_time.isoformat():
+                        process_data[0]['x'] = start_time.isoformat()
 
         return {
             'timeline': timeline_data,
