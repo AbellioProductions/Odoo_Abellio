@@ -9,14 +9,14 @@ export class MachineLiveCharts extends Component {
     setup() {
         this.orm = useService("orm");
         this.canvasRef = useRef("chartCanvas");
-        this.chartInstance = null;
-        this.refreshInterval = null;
-        this.rawData = null; 
-        
+        this.chartInst = null;
+        this.refreshTask = null;
+        this.rawMetric = null;
+
         this.state = useState({
             error: false,
             visibleTimeline: [],
-            zoomLevel: 1,  
+            zoomLevel: 1,
             panOffset: 0,
             availableCounts: [],
             selectedCountId: false,
@@ -29,17 +29,53 @@ export class MachineLiveCharts extends Component {
         onMounted(async () => {
             await loadJS("/web/static/lib/Chart/Chart.js");
             await this.fetchData();
-            
-            if (this.props.record.resId) {
-                const freq = Math.max(this.props.record.data.refresh_frequency || 60, 10);
-                this.refreshInterval = setInterval(() => this.fetchData(), freq * 1000);
-            }
+            this.initAutoRefresh();
         });
 
         onWillUnmount(() => {
-            if (this.refreshInterval) clearInterval(this.refreshInterval);
-            if (this.chartInstance) this.chartInstance.destroy();
+            this.stopAutoRefresh();
+            this.destroyChart();
         });
+    }
+
+    initAutoRefresh() {
+        if (this.props.record.resId) {
+            const freq = Math.max(this.props.record.data.refresh_frequency || 60, 10);
+            this.refreshTask = setInterval(() => this.fetchData(), freq * 1000);
+        }
+    }
+
+    stopAutoRefresh() {
+        if (this.refreshTask) clearInterval(this.refreshTask);
+    }
+
+    destroyChart() {
+        if (this.chartInst) {
+            this.chartInst.destroy();
+            this.chartInst = null;
+        }
+    }
+
+    parseTimeMs(val) {
+        if (!val) return NaN;
+        if (typeof val === 'number') return val;
+        const str = String(val).replace(' ', 'T');
+        return new Date(str).getTime();
+    }
+
+    getStartMs() {
+        let startMs = Date.now();
+        const rawStart = this.rawMetric?.shift_start || this.rawMetric?.chart?.labels?.[0];
+        const parsedMs = this.parseTimeMs(rawStart);
+        if (!isNaN(parsedMs)) {
+            startMs = parsedMs;
+        }
+        return startMs;
+    }
+
+    getLineColor(idx) {
+        const colors = ['#dc3545', '#007bff', '#fd7e14', '#6f42c1', '#20c997', '#e83e8c', '#17a2b8', '#ffc107'];
+        return colors[idx % colors.length];
     }
 
     async fetchData() {
@@ -53,7 +89,7 @@ export class MachineLiveCharts extends Component {
             await this.props.record.load();
         }
 
-        const result = await this.orm.call(
+        const res = await this.orm.call(
             "mrp.workcenter", 
             "get_live_chart_data", 
             [
@@ -63,25 +99,21 @@ export class MachineLiveCharts extends Component {
             ]
         );
 
-        if (result.error) {
-            this.state.error = result.error;
+        if (res.error) {
+            this.state.error = res.error;
             return;
         }
 
         this.state.error = false;
-        this.rawData = result;
+        this.rawMetric = res;
         
-        this.state.availableCounts = result.available_counts;
-        this.state.selectedCountId = result.selected_count_id;
-        this.state.selectedCountName = result.selected_count_name;
+        this.state.availableCounts = res.available_counts || [];
+        this.state.selectedCountId = res.selected_count_id;
+        this.state.selectedCountName = res.selected_count_name;
 
-        if (result.available_processes) {
-            this.state.availableProcesses = result.available_processes;
-        }
-        if (result.selected_process_id) {
-            this.state.selectedProcessId = result.selected_process_id;
-            this.state.selectedProcessName = result.selected_process_name;
-        }
+        this.state.availableProcesses = res.available_processes || [];
+        this.state.selectedProcessId = res.selected_process_id;
+        this.state.selectedProcessName = res.selected_process_name;
         
         this.applyZoomAndPan(); 
     }
@@ -100,180 +132,149 @@ export class MachineLiveCharts extends Component {
 
     onWheelZoom(ev) {
         ev.preventDefault(); 
-        const zoomStep = 0.5;
-        let newZoom = parseFloat(this.state.zoomLevel);
-        
-        if (ev.deltaY < 0) {
-            newZoom = Math.min(20, newZoom + zoomStep);
-        } else {
-            newZoom = Math.max(1, newZoom - zoomStep);
-        }
-        
-        this.state.zoomLevel = newZoom;
+        const step = 0.5;
+        let scale = parseFloat(this.state.zoomLevel);
+        scale = ev.deltaY < 0 ? Math.min(20, scale + step) : Math.max(1, scale - step);
+        this.state.zoomLevel = scale;
         this.applyZoomAndPan();
     }
 
     applyZoomAndPan() {
-        if (!this.rawData) return;
+        if (!this.rawMetric) return;
         
-        const zl = parseFloat(this.state.zoomLevel) || 1;
+        const scale = parseFloat(this.state.zoomLevel) || 1;
         const pan = parseFloat(this.state.panOffset) || 0;
-        const totalSec = this.rawData.chart_duration_sec || 28800;
-        const bucketSec = (this.rawData.chart && this.rawData.chart.bucket_sec) ? this.rawData.chart.bucket_sec : 900;
+        const totalDurSec = this.rawMetric.chart_duration_sec || 28800;
+        const stepSec = this.rawMetric.chart?.bucket_sec || 900;
+        const startMs = this.getStartMs();
+
+        const viewDurSec = totalDurSec / scale;
+        const maxShiftSec = totalDurSec - viewDurSec;
+        const viewStartSec = maxShiftSec * (pan / 100);
+        const viewEndSec = viewStartSec + viewDurSec;
+
+        let startIdx = Math.max(0, Math.floor(viewStartSec / stepSec));
+        let endIdx = Math.ceil(viewEndSec / stepSec);
         
-        let shiftStartMs = Date.now();
-        if (this.rawData.shift_start) {
-            shiftStartMs = new Date(this.rawData.shift_start).getTime();
-        } else if (this.rawData.chart && this.rawData.chart.labels && this.rawData.chart.labels.length > 0) {
-            shiftStartMs = new Date(this.rawData.chart.labels[0]).getTime();
-        }
-        if (isNaN(shiftStartMs)) shiftStartMs = Date.now();
-
-        const desiredViewSec = totalSec / zl;
-        const maxOffsetSec = totalSec - desiredViewSec;
-        const desiredStartSec = maxOffsetSec * (pan / 100);
-        const desiredEndSec = desiredStartSec + desiredViewSec;
-
-        let startIdx = Math.floor(desiredStartSec / bucketSec);
-        let endIdx = Math.ceil(desiredEndSec / bucketSec);
-        startIdx = Math.max(0, startIdx);
+        const prodSeries = this.rawMetric.chart?.production || [];
+        const maxIdx = Math.max(0, prodSeries.length - 1);
         
-        const prodData = (this.rawData.chart && this.rawData.chart.production) || [];
-        const labelsLength = prodData.length > 0 ? prodData.length : 1;
-        endIdx = Math.min(labelsLength - 1, endIdx);
-
+        endIdx = Math.min(maxIdx, endIdx);
         if (endIdx - startIdx < 1) {
-            endIdx = Math.min(labelsLength - 1, startIdx + 1);
+            endIdx = Math.min(maxIdx, startIdx + 1);
         }
 
-        const actualStartSec = startIdx * bucketSec;
-        const actualEndSec = endIdx * bucketSec;
-        const actualViewSec = actualEndSec - actualStartSec;
+        const boundStartSec = startIdx * stepSec;
+        const boundEndSec = endIdx * stepSec;
+        const activeDurSec = Math.max(1, boundEndSec - boundStartSec);
 
         this.state.visibleTimeline = [];
-        if (this.rawData.timeline) {
-            for (const block of this.rawData.timeline) {
-                const blockStartSec = (new Date(block.start).getTime() - shiftStartMs) / 1000;
-                const blockEndSec = (new Date(block.end).getTime() - shiftStartMs) / 1000;
-                const clampedStart = Math.max(actualStartSec, blockStartSec);
-                const clampedEnd = Math.min(actualEndSec, blockEndSec);
+        if (this.rawMetric.timeline) {
+            for (const block of this.rawMetric.timeline) {
+                const blockStartSec = (this.parseTimeMs(block.start) - startMs) / 1000;
+                const blockEndSec = (this.parseTimeMs(block.end) - startMs) / 1000;
+                const clampStart = Math.max(boundStartSec, blockStartSec);
+                const clampEnd = Math.min(boundEndSec, blockEndSec);
 
-                if (clampedStart < clampedEnd) {
+                if (clampStart < clampEnd && !isNaN(clampStart) && !isNaN(clampEnd)) {
                     this.state.visibleTimeline.push({
                         ...block,
-                        widthPct: ((clampedEnd - clampedStart) / actualViewSec) * 100,
+                        widthPct: ((clampEnd - clampStart) / activeDurSec) * 100,
                         durationMin: Math.round(block.duration / 60)
                     });
                 }
             }
         }
 
-        let slicedProcess = null;
-        if (this.rawData.chart && Array.isArray(this.rawData.chart.process)) {
-            let rawProcess = [];
-            for (let i = 0; i < this.rawData.chart.process.length; i++) {
-                const pt = this.rawData.chart.process[i];
-                if (pt != null && pt.x !== undefined) {
-                    const xVal = (new Date(pt.x).getTime() - shiftStartMs) / 1000;
-                    if (!isNaN(xVal)) {
-                        rawProcess.push({ x: xVal, y: Number(pt.y) });
+        const procList = [];
+        if (Array.isArray(this.rawMetric.chart?.processes)) {
+            for (const proc of this.rawMetric.chart.processes) {
+                if (!Array.isArray(proc.data)) continue;
+
+                const rawProc = [];
+                for (const pt of proc.data) {
+                    if (pt?.x !== undefined) {
+                        const ptX = (this.parseTimeMs(pt.x) - startMs) / 1000;
+                        if (!isNaN(ptX)) {
+                            rawProc.push({ x: ptX, y: Number(pt.y) });
+                        }
                     }
                 }
-            }
-            
-            slicedProcess = rawProcess.filter(pt => pt.x >= actualStartSec && pt.x <= actualEndSec);
-            
-            const beforeStart = rawProcess.filter(pt => pt.x < actualStartSec);
-            if (beforeStart.length > 0) {
-                slicedProcess.unshift({ x: actualStartSec, y: beforeStart[beforeStart.length - 1].y });
-            }
-            if (slicedProcess.length > 0) {
-                slicedProcess.push({ x: actualEndSec, y: slicedProcess[slicedProcess.length - 1].y });
+                
+                const slicedProc = rawProc.filter(pt => pt.x >= boundStartSec && pt.x <= boundEndSec);
+                const prevPts = rawProc.filter(pt => pt.x < boundStartSec);
+                
+                if (prevPts.length > 0) {
+                    slicedProc.unshift({ x: boundStartSec, y: prevPts[prevPts.length - 1].y });
+                }
+                if (slicedProc.length > 0) {
+                    slicedProc.push({ x: boundEndSec, y: slicedProc[slicedProc.length - 1].y });
+                }
+
+                procList.push({
+                    name: proc.name,
+                    data: slicedProc
+                });
             }
         }
 
-        const slicedProduction = [];
-        const slicedIdeal = [];
+        const outProd = [];
+        const outIdeal = [];
+        const idealSeries = this.rawMetric.chart?.ideal || [];
         
-        if (this.rawData.chart && Array.isArray(this.rawData.chart.production)) {
-            for (let i = startIdx; i <= endIdx; i++) {
-                const sec = i * bucketSec;
-                if (i < this.rawData.chart.production.length) {
-                    slicedProduction.push({ x: sec, y: Number(this.rawData.chart.production[i]) });
-                    if (this.rawData.chart.ideal && i < this.rawData.chart.ideal.length) {
-                        slicedIdeal.push({ x: sec, y: Number(this.rawData.chart.ideal[i]) });
-                    }
+        for (let i = startIdx; i <= endIdx; i++) {
+            if (i < prodSeries.length) {
+                const ptX = i * stepSec;
+                outProd.push({ x: ptX, y: Number(prodSeries[i]) });
+                
+                if (idealSeries[i] !== undefined) {
+                    outIdeal.push({ x: ptX, y: Number(idealSeries[i]) });
                 }
             }
         }
 
-        const slicedData = {
-            production: slicedProduction.map(p => ({ x: p.x, y: p.y })),
-            ideal: slicedIdeal.map(p => ({ x: p.x, y: p.y })),
-            show_ideal: this.rawData.chart ? !!this.rawData.chart.show_ideal : false,
-            process: slicedProcess ? slicedProcess.map(p => ({ x: p.x, y: p.y })) : null,
-            xMin: actualStartSec,
-            xMax: actualEndSec,
-            shiftStartMs: shiftStartMs,
-            bucketSec: bucketSec
-        };
-
-        this.updateChart(slicedData);
+        this.updateChart({
+            production: outProd,
+            ideal: outIdeal,
+            showIdeal: !!this.rawMetric.chart?.show_ideal,
+            processes: procList,
+            xMin: boundStartSec,
+            xMax: boundEndSec,
+            startMs: startMs,
+            stepSec: stepSec
+        });
     }
 
-    updateChart(data) {
+    updateChart(plot) {
         if (!this.canvasRef.el) return;
 
         const isV3 = typeof window.Chart.defaults.plugins !== 'undefined';
-        const shiftStartMs = data.shiftStartMs;
         
-        const formatTime = (seconds) => {
-            if (isNaN(seconds)) return '';
-            const d = new Date(shiftStartMs + seconds * 1000);
+        const formatTime = (sec) => {
+            if (isNaN(sec)) return '';
+            const d = new Date(plot.startMs + sec * 1000);
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
         };
 
         const alignTimeline = (chart) => {
-            const chartArea = chart.chartArea;
-            const canvas = chart.canvas || (chart.chart && chart.chart.canvas);
-            if (!canvas || !chartArea) return;
-            const dashboard = canvas.closest('.o_mes_live_dashboard');
-            const wrapper = dashboard ? dashboard.querySelector('.mes-timeline-wrapper') : null;
-            if (wrapper) {
-                wrapper.style.marginLeft = chartArea.left + 'px';
-                wrapper.style.width = (chartArea.right - chartArea.left) + 'px';
+            const area = chart.chartArea;
+            const cnv = chart.canvas || chart.chart?.canvas;
+            if (!cnv || !area) return;
+            
+            const dash = cnv.closest('.o_mes_live_dashboard');
+            const wrap = dash?.querySelector('.mes-timeline-wrapper');
+            if (wrap) {
+                wrap.style.marginLeft = `${area.left}px`;
+                wrap.style.width = `${area.right - area.left}px`;
             }
         };
 
-        const cleanProd = [];
-        for (let i = 0; i < data.production.length; i++) {
-            cleanProd.push({ x: data.production[i].x, y: data.production[i].y });
-        }
-
-        let cleanIdeal = [];
-        if (data.ideal && data.ideal.length > 0) {
-            for (let i = 0; i < data.ideal.length; i++) {
-                cleanIdeal.push({ x: data.ideal[i].x, y: data.ideal[i].y });
-            }
-        }
-
-        let cleanProcess = [];
-        if (data.process && data.process.length > 0) {
-            for (let i = 0; i < data.process.length; i++) {
-                cleanProcess.push({ x: data.process[i].x, y: data.process[i].y });
-            }
-        }
-
-        if (this.chartInstance) {
-            this.chartInstance.destroy();
-            this.chartInstance = null;
-        }
-
+        this.destroyChart();
         const ctx = this.canvasRef.el.getContext("2d");
         
-        const datasets = [{
+        const ds = [{
             label: this.state.selectedCountName || '',
-            data: cleanProd,
+            data: plot.production,
             xAxisID: 'x',
             yAxisID: 'yCount',
             borderColor: '#28a745',
@@ -286,10 +287,10 @@ export class MachineLiveCharts extends Component {
             order: 2
         }];
 
-        if (data.show_ideal && cleanIdeal.length > 0) {
-            datasets.push({
+        if (plot.showIdeal && plot.ideal.length > 0) {
+            ds.push({
                 label: 'Ideal Capacity',
-                data: cleanIdeal,
+                data: plot.ideal,
                 xAxisID: 'x',
                 yAxisID: 'yCount',
                 type: 'line',
@@ -302,91 +303,98 @@ export class MachineLiveCharts extends Component {
             });
         }
 
-        if (this.state.selectedProcessName && cleanProcess.length > 0) {
-            datasets.push({
-                label: this.state.selectedProcessName,
-                data: cleanProcess,
-                xAxisID: 'x',
-                yAxisID: 'yProcess',
-                borderColor: '#dc3545',
-                backgroundColor: 'transparent',
-                borderWidth: 2,
-                fill: false,
-                stepped: true,
-                steppedLine: true,
-                tension: 0,
-                lineTension: 0,
-                pointRadius: 3,
-                pointBackgroundColor: '#dc3545',
-                order: 1
+        let hasProcess = false;
+        if (plot.processes?.length > 0) {
+            plot.processes.forEach((proc, idx) => {
+                if (proc.data.length > 0) {
+                    hasProcess = true;
+                    const color = this.getLineColor(idx);
+                    ds.push({
+                        label: proc.name,
+                        data: proc.data,
+                        xAxisID: 'x',
+                        yAxisID: 'yProcess',
+                        borderColor: color,
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        fill: false,
+                        stepped: true,
+                        steppedLine: true,
+                        tension: 0,
+                        lineTension: 0,
+                        pointRadius: 3,
+                        pointBackgroundColor: color,
+                        order: 1
+                    });
+                }
             });
         }
 
-        let scalesConfig = {};
+        let axCfg = {};
         if (isV3) {
-            scalesConfig = {
+            axCfg = {
                 x: {
                     type: 'linear',
-                    min: data.xMin,
-                    max: data.xMax,
+                    min: plot.xMin,
+                    max: plot.xMax,
                     ticks: { 
-                        stepSize: data.bucketSec,
+                        stepSize: plot.stepSec,
                         maxRotation: 45, 
                         minRotation: 45, 
-                        callback: function(value) { return formatTime(value); } 
+                        callback: formatTime 
                     }
                 },
                 yCount: { type: 'linear', position: 'left', beginAtZero: true },
-                yProcess: { type: 'linear', position: 'right', beginAtZero: true, grid: { drawOnChartArea: false } }
+                yProcess: { 
+                    type: 'linear', 
+                    position: 'right', 
+                    beginAtZero: false,
+                    display: hasProcess,
+                    grid: { drawOnChartArea: false } 
+                }
             };
         } else {
-            scalesConfig = {
+            axCfg = {
                 xAxes: [{
                     id: 'x',
                     type: 'linear',
                     ticks: { 
-                        min: data.xMin, 
-                        max: data.xMax, 
-                        stepSize: data.bucketSec,
+                        min: plot.xMin, 
+                        max: plot.xMax, 
+                        stepSize: plot.stepSec,
                         maxRotation: 45, 
                         minRotation: 45, 
-                        callback: function(value) { return formatTime(value); } 
+                        callback: formatTime 
                     }
                 }],
                 yAxes: [
                     { id: 'yCount', type: 'linear', position: 'left', ticks: { beginAtZero: true } },
-                    { id: 'yProcess', type: 'linear', position: 'right', ticks: { beginAtZero: true }, gridLines: { drawOnChartArea: false } }
+                    { id: 'yProcess', type: 'linear', position: 'right', display: hasProcess, gridLines: { drawOnChartArea: false } }
                 ]
             };
         }
 
-        let tooltipsConfig = isV3 ? {} : {
+        const ttCfg = isV3 ? {} : {
             mode: 'index', 
             intersect: false,
             callbacks: {
-                title: function(tooltipItems) {
-                    if (!tooltipItems.length) return '';
-                    return formatTime(tooltipItems[0].xLabel);
-                }
+                title: (items) => items.length ? formatTime(items[0].xLabel) : ''
             }
         };
 
-        let pluginsConfig = isV3 ? {
+        const plCfg = isV3 ? {
             tooltip: {
                 mode: 'index',
                 intersect: false,
                 callbacks: {
-                    title: function(tooltipItems) {
-                        if (!tooltipItems.length) return '';
-                        return formatTime(tooltipItems[0].parsed.x);
-                    }
+                    title: (items) => items.length ? formatTime(items[0].parsed.x) : ''
                 }
             }
         } : {};
 
-        this.chartInstance = new window.Chart(ctx, {
+        this.chartInst = new window.Chart(ctx, {
             type: 'line',
-            data: { datasets: datasets },
+            data: { datasets: ds },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
@@ -395,9 +403,9 @@ export class MachineLiveCharts extends Component {
                     onComplete: function() { alignTimeline(this); },
                     onProgress: function() { alignTimeline(this); }
                 }, 
-                scales: scalesConfig,
-                tooltips: tooltipsConfig,
-                plugins: pluginsConfig,
+                scales: axCfg,
+                tooltips: ttCfg,
+                plugins: plCfg,
                 hover: { mode: 'nearest', intersect: true }
             }
         });

@@ -205,6 +205,16 @@
                             <field name="default_OPCTag"/>
                         </group>
                     </group>
+                    <notebook>
+                        <page string="Related Processes">
+                            <field name="related_process_ids">
+                                <tree>
+                                    <field name="complete_name"/>
+                                    <field name="code"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
                 </sheet>
             </form>
         </field>

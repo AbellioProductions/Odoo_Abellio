@@ -270,6 +270,14 @@ class MesProcess(models.Model):
     complete_name = fields.Char('Complete Name', compute='_compute_complete_name', store=True)
     default_OPCTag = fields.Char(string='Default OPC Tag', help="Default tag for OPC integration")
 
+    related_process_ids = fields.Many2many(
+        'mes.process', 
+        'mes_process_related_rel', 
+        'process_id', 
+        'related_id', 
+        string='Related Processes'
+    )
+
     @api.depends('name', 'parent_id.complete_name')
     def _compute_complete_name(self):
         for rec in self:
@@ -452,133 +460,160 @@ class MesWorkcenter(models.Model):
 
         machine = wc.machine_settings_id
         start_time, shift_end = self.env['mes.shift'].get_current_shift_window()
-        if not start_time: return {'error': 'No active shift'}
+        
+        if not start_time: 
+            return {'error': 'No active shift'}
+
         calc_end_time = min(fields.Datetime.now(), shift_end)
-
+        
         available_counts = []
-        seen_ids = set()
-        for ct in machine.count_tag_ids:
-            if ct.count_id and ct.count_id.id not in seen_ids:
+        seen_count_ids = set()
+        for ct_tag in machine.count_tag_ids:
+            if ct_tag.count_id and ct_tag.count_id.id not in seen_count_ids:
                 available_counts.append({
-                    'id': ct.count_id.id,
-                    'name': ct.count_id.name
+                    'id': ct_tag.count_id.id,
+                    'name': ct_tag.count_id.name
                 })
-                seen_ids.add(ct.count_id.id)
+                seen_count_ids.add(ct_tag.count_id.id)
 
-        target_count_id = self.env['mes.counts'].browse(int(selected_count_id)) if selected_count_id else wc.production_count_id
-        
-        show_ideal_line = False
-        if wc.production_count_id and target_count_id:
-            show_ideal_line = (target_count_id.id == wc.production_count_id.id)
+        target_count = self.env['mes.counts'].browse(int(selected_count_id)) if selected_count_id else wc.production_count_id
+        show_ideal_line = bool(wc.production_count_id and target_count and target_count.id == wc.production_count_id.id)
 
-        good_signals = machine.count_tag_ids.filtered(lambda x: x.count_id == target_count_id)
+        good_signals = machine.count_tag_ids.filtered(lambda tag: tag.count_id == target_count)
         good_tags = list(set(good_signals.mapped('tag_name')))
-        tag_is_cum = {sig.tag_name: sig.is_cumulative for sig in good_signals}
-        
-        if not good_tags and target_count_id and target_count_id.default_OPCTag:
-            def_tag = target_count_id.default_OPCTag
-            good_tags = [def_tag]
-            tag_is_cum = {def_tag: target_count_id.is_cumulative}
+        tag_is_cumulative = {sig.tag_name: sig.is_cumulative for sig in good_signals}
+
+        if not good_tags and target_count and target_count.default_OPCTag:
+            default_opc_tag = target_count.default_OPCTag
+            good_tags = [default_opc_tag]
+            tag_is_cumulative = {default_opc_tag: target_count.is_cumulative}
 
         event_signals = machine.event_tag_ids
         all_event_tags = list(set(event_signals.mapped('tag_name')))
-        
-        state_sig = event_signals.filtered(lambda x: x.event_id == wc.runtime_event_id)
-        state_configs = [{'tag': s.tag_name, 'val': s.plc_value} for s in state_sig]
-        
+
+        state_signals = event_signals.filtered(lambda tag: tag.event_id == wc.runtime_event_id)
+        state_configs = [{'tag': sig.tag_name, 'val': sig.plc_value} for sig in state_signals]
+
         if not state_configs and wc.runtime_event_id and wc.runtime_event_id.default_event_tag_type:
-            def_tag = wc.runtime_event_id.default_event_tag_type
-            state_configs = [{'tag': def_tag, 'val': wc.runtime_event_id.default_plc_value}]
-            
-        for sc in state_configs:
-            if sc['tag'] not in all_event_tags:
-                all_event_tags.append(sc['tag'])
+            default_event_tag = wc.runtime_event_id.default_event_tag_type
+            state_configs = [{'tag': default_event_tag, 'val': wc.runtime_event_id.default_plc_value}]
+
+        for config in state_configs:
+            if config['tag'] not in all_event_tags:
+                all_event_tags.append(config['tag'])
 
         available_processes = []
-        all_processes = self.env['mes.process'].search([])
-        for p in all_processes:
-            ptag = p.get_tag_for_machine(machine)
-            if ptag:
-                available_processes.append({'id': p.id, 'name': p.complete_name or p.name})
+        for proc in self.env['mes.process'].search([]):
+            if proc.get_tag_for_machine(machine):
+                available_processes.append({'id': proc.id, 'name': proc.complete_name or proc.name})
 
-        target_process_id = self.env['mes.process'].browse(int(selected_process_id)) if selected_process_id else False
-        process_tag = target_process_id.get_tag_for_machine(machine) if target_process_id else False
+        target_process = self.env['mes.process'].browse(int(selected_process_id)) if selected_process_id else self.env['mes.process']
+        
+        processes_to_fetch = self.env['mes.process']
+        if target_process:
+            processes_to_fetch |= target_process
+            processes_to_fetch |= target_process.related_process_ids
 
         bucket_min = max(1, wc.chart_bucket_minutes)
         bucket_sec = bucket_min * 60
         total_shift_sec = (calc_end_time - start_time).total_seconds()
         num_intervals = math.ceil(total_shift_sec / bucket_sec) if total_shift_sec > 0 else 1
-        
-        labels, production_data, ideal_data, bucket_indices = [], [], [], {}
-        process_data = None
+
+        def format_utc_iso(dt_obj):
+            return dt_obj.isoformat() + 'Z' if not dt_obj.tzinfo else dt_obj.isoformat()
+
+        labels = []
+        production_data = []
+        ideal_data = []
+        bucket_indices = {}
         ideal_per_bucket = (wc.ideal_capacity_per_min or 0.0) * bucket_min
 
-        for i in range(num_intervals + 1):
-            b_time = start_time + timedelta(seconds=i * bucket_sec)
-            labels.append(b_time.isoformat()) 
+        for interval_idx in range(num_intervals + 1):
+            bucket_time = start_time + timedelta(seconds=interval_idx * bucket_sec)
+            labels.append(format_utc_iso(bucket_time))
             production_data.append(0.0)
-            ideal_data.append(ideal_per_bucket if i > 0 else 0.0) 
-            bucket_indices[b_time] = i
+            ideal_data.append(ideal_per_bucket if interval_idx > 0 else 0.0)
+            bucket_indices[bucket_time] = interval_idx
 
         timeline_data = []
+        all_processes_data = []
+        primary_process_data = []
+
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
                 if all_event_tags:
                     raw_timeline = machine._fetch_timeline_raw(cur, start_time, calc_end_time, all_event_tags)
                     timeline_data = self._process_timeline_colors(machine, raw_timeline, state_configs)
-                
+
                 if good_tags:
                     raw_production = machine._fetch_production_chart_raw(cur, good_tags, start_time, calc_end_time, bucket_min)
                     for row in raw_production:
-                        t_name = row[0]
-                        b_time = row[1].replace(tzinfo=None) if row[1].tzinfo else row[1]
-                        produced = float(row[3]) if tag_is_cum.get(t_name) else float(row[2])
-                        
-                        if b_time in bucket_indices:
-                            plot_idx = bucket_indices[b_time] + 1 
-                            if plot_idx < len(production_data):
-                                production_data[plot_idx] += produced
+                        tag_name = row[0]
+                        bucket_ts = row[1].replace(tzinfo=None) if row[1].tzinfo else row[1]
+                        produced_qty = float(row[3]) if tag_is_cumulative.get(tag_name) else float(row[2])
 
-                if process_tag:
-                    query = """
+                        if bucket_ts in bucket_indices:
+                            plot_idx = bucket_indices[bucket_ts] + 1
+                            if plot_idx < len(production_data):
+                                production_data[plot_idx] += produced_qty
+
+                start_iso = format_utc_iso(start_time)
+                
+                for proc in processes_to_fetch:
+                    proc_tag = proc.get_tag_for_machine(machine)
+                    if not proc_tag:
+                        continue
+
+                    telemetry_query = """
                         SELECT time, value FROM (
                             (SELECT time, value
-                             FROM telemetry_process
-                             WHERE machine_name = %s AND tag_name = %s AND time < %s
-                             ORDER BY time DESC LIMIT 1)
+                            FROM telemetry_process
+                            WHERE machine_name = %s AND tag_name = %s AND time < %s
+                            ORDER BY time DESC LIMIT 1)
                             UNION ALL
                             (SELECT time, value
-                             FROM telemetry_process
-                             WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
-                             ORDER BY time ASC)
-                        ) sub ORDER BY time ASC
+                            FROM telemetry_process
+                            WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
+                            ORDER BY time ASC)
+                        ) sub_query ORDER BY time ASC
                     """
-                    cur.execute(query, (machine.name, process_tag, start_time, machine.name, process_tag, start_time, calc_end_time))
-                    
-                    process_data = []
+                    cur.execute(telemetry_query, (
+                        machine.name, proc_tag, start_time,
+                        machine.name, proc_tag, start_time, calc_end_time
+                    ))
+
+                    proc_series = []
                     for row in cur.fetchall():
-                        t_iso = row[0].isoformat()
-                        val = float(row[1])
-                        process_data.append({'x': t_iso, 'y': val})
-                    
-                    if process_data and process_data[0]['x'] < start_time.isoformat():
-                        process_data[0]['x'] = start_time.isoformat()
+                        pt_x = format_utc_iso(row[0])
+                        proc_series.append({
+                            'x': start_iso if pt_x < start_iso else pt_x,
+                            'y': float(row[1])
+                        })
+
+                    if target_process and proc.id == target_process.id:
+                        primary_process_data = proc_series
+
+                    all_processes_data.append({
+                        'name': proc.complete_name or proc.name,
+                        'data': proc_series
+                    })
 
         return {
             'timeline': timeline_data,
             'chart_duration_sec': num_intervals * bucket_sec,
-            'shift_start': start_time.isoformat(), 
+            'shift_start': format_utc_iso(start_time),
             'available_counts': available_counts,
-            'selected_count_id': target_count_id.id if target_count_id else False,
-            'selected_count_name': target_count_id.name if target_count_id else 'Data',
+            'selected_count_id': target_count.id if target_count else False,
+            'selected_count_name': target_count.name if target_count else 'Data',
             'available_processes': available_processes,
-            'selected_process_id': target_process_id.id if target_process_id else False,
-            'selected_process_name': target_process_id.complete_name if target_process_id else '',
+            'selected_process_id': target_process.id if target_process else False,
+            'selected_process_name': target_process.complete_name if target_process else '',
             'chart': {
                 'labels': labels,
                 'production': production_data,
                 'ideal': ideal_data,
-                'process': process_data,
+                'process': primary_process_data,
+                'processes': all_processes_data,
                 'bucket_sec': bucket_sec,
                 'show_ideal': show_ideal_line
             }
