@@ -65,7 +65,7 @@
     <menuitem id="menu_mes_reject_analytics" 
               name="Reject Analysis" 
               parent="menu_mes_analytics" 
-              action="action_mes_reject_report_wiz" 
+              action="action_mes_reject_wizard" 
               sequence="17"/>
 
        <menuitem id="menu_mes_shift_analytics" 

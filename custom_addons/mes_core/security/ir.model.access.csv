@@ -46,6 +46,8 @@ access_mes_analytics_rep_adm,mes.analytics.rep.adm,model_mes_analytics_report_li
 access_mes_alarm_wiz_adm,mes.alarm.wiz.adm,model_mes_alarm_report_wizard,mes_core.group_mes_administrator,1,1,1,1
 access_mes_alarm_rep_adm,mes.alarm.rep.adm,model_mes_alarm_report_line,mes_core.group_mes_administrator,1,1,1,1
 access_mes_base_wiz_adm,mes.base.wiz.adm,model_mes_report_base_wizard,mes_core.group_mes_administrator,1,1,1,1
+access_mes_reject_report_wizard,access.mes.reject.report.wizard,model_mes_reject_report_wizard,mes_core.group_mes_administrator,1,1,1,1
+access_mes_reject_report_line,access.mes.reject.report.line,model_mes_reject_report_line,mes_core.group_mes_administrator,1,1,1,1
 
 
 access_mes_downtime_planner_wizard_adm,mes.downtime.planner.wizard.adm,model_mes_downtime_planner_wizard,mes_core.group_mes_administrator,1,1,1,1
@@ -99,6 +101,8 @@ access_mes_analytics_rep_mgr,mes.analytics.rep.mgr,model_mes_analytics_report_li
 access_mes_alarm_wiz_mgr,mes.alarm.wiz.mgr,model_mes_alarm_report_wizard,mes_core.group_mes_manager,1,1,1,1
 access_mes_alarm_rep_mgr,mes.alarm.rep.mgr,model_mes_alarm_report_line,mes_core.group_mes_manager,1,1,1,1
 access_mes_base_wiz_mgr,mes.base.wiz.mgr,model_mes_report_base_wizard,mes_core.group_mes_manager,1,1,1,1
+access_mes_reject_report_wizard,access.mes.reject.report.wizard,model_mes_reject_report_wizard,mes_core.group_mes_manager,1,1,1,1
+access_mes_reject_report_line,access.mes.reject.report.line,model_mes_reject_report_line,mes_core.group_mes_manager,1,1,1,1
 
 access_mes_downtime_planner_wizard_mgr,mes.downtime.planner.wizard.mgr,model_mes_downtime_planner_wizard,mes_core.group_mes_manager,1,1,1,1
 

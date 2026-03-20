@@ -1,101 +1,73 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <record id="view_mes_reject_report_wiz" model="ir.ui.view">
-        <field name="name">mes.reject.report.wiz.form</field>
-        <field name="model">mes.reject.report.wiz</field>
+
+    <record id="view_mes_reject_report_tree" model="ir.ui.view">
+        <field name="name">mes.reject.report.line.tree</field>
+        <field name="model">mes.reject.report.line</field>
+        <field name="arch" type="xml">
+            <tree string="Rejects List" create="false" edit="false" delete="false" default_order="qty desc">
+                <field name="row_group_label"/>
+                <field name="col_group_label"/>
+                <field name="qty" sum="Total Quantity"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_mes_reject_report_pivot" model="ir.ui.view">
+        <field name="name">mes.reject.report.line.pivot</field>
+        <field name="model">mes.reject.report.line</field>
+        <field name="arch" type="xml">
+            <pivot string="Rejects Matrix" disable_linking="True">
+                <field name="row_group_label" type="row"/>
+                <field name="col_group_label" type="col"/>
+                <field name="qty" type="measure"/>
+            </pivot>
+        </field>
+    </record>
+
+    <record id="view_mes_reject_wizard_form" model="ir.ui.view">
+        <field name="name">mes.reject.report.wizard.form</field>
+        <field name="model">mes.reject.report.wizard</field>
         <field name="inherit_id" ref="mes_core.view_mes_report_base_form"/>
         <field name="mode">primary</field>
         <field name="arch" type="xml">
             
             <xpath expr="//group[@name='skd_filters']" position="inside">
-                <group string="Machines" colspan="2">
-                    <field name="mac_flt" widget="radio" options="{'horizontal': true}"/>
-                    <field name="mac_ids" widget="many2many_tags" nolabel="1"/>
-                </group>
-                <group string="Counts" colspan="2">
-                    <field name="cnt_flt" widget="radio" options="{'horizontal': true}"/>
-                    <field name="cnt_ids" widget="many2many_tags" nolabel="1"/>
-                </group>
+                <label for="cnt_ids" string="Reject Counts"/>
+                <div class="o_row">
+                    <field name="cnt_filter_type" nolabel="1"/>
+                    <field name="cnt_ids" widget="many2many_tags" nolabel="1" placeholder="All Data"/>
+                </div>
             </xpath>
             
-            <xpath expr="//group[@name='skd_filters']" position="after">
-                <group string="Grouping Options" name="reject_grouping">
-                    <field name="grp_dt"/>
-                    <field name="grp_mac"/>
-                    <field name="grp_cnt" widget="radio"/>
-                    <field name="grp_is_mod"/>
-                    <field name="grp_wheel"/>
-                    <field name="grp_mod"/>
+            <xpath expr="//group[@name='row_group']" position="inside">
+                <field name="row_by_cnt"/>
+                <field name="row_by_is_mod"/>
+                <field name="row_by_wheel"/>
+                <field name="row_by_mod"/>
+            </xpath>
+            
+            <xpath expr="//group[@name='col_group']" position="inside">
+                <field name="col_by_cnt"/>
+                <field name="col_by_is_mod"/>
+                <field name="col_by_wheel"/>
+                <field name="col_by_mod"/>
+            </xpath>
+            
+            <xpath expr="//page[@name='measures_page']" position="inside">
+                <group>
+                    <field name="show_qty"/>
                 </group>
             </xpath>
 
-            <xpath expr="//footer" position="replace">
-                <footer>
-                    <button name="action_gen_report" string="Generate Report" type="object" class="btn-primary"/>
-                    <button string="Cancel" class="btn-secondary" special="cancel"/>
-                </footer>
-            </xpath>
-            
         </field>
     </record>
 
-    <record id="action_mes_reject_report_wiz" model="ir.actions.act_window">
-        <field name="name">Reject Analysis</field>
-        <field name="res_model">mes.reject.report.wiz</field>
+    <record id="action_mes_reject_wizard" model="ir.actions.act_window">
+        <field name="name">Reject Matrix Builder</field>
+        <field name="res_model">mes.reject.report.wizard</field>
         <field name="view_mode">form</field>
         <field name="target">new</field>
     </record>
 
-    <record id="action_report_reject" model="ir.actions.report">
-        <field name="name">Reject Report</field>
-        <field name="model">mes.reject.report.wiz</field>
-        <field name="report_type">qweb-html</field>
-        <field name="report_name">mes_core.report_reject_tpl</field>
-        <field name="report_file">mes_core.report_reject_tpl</field>
-        <field name="binding_model_id" ref="model_mes_reject_report_wiz"/>
-        <field name="binding_type">report</field>
-    </record>
-
-    <template id="report_reject_tpl">
-        <t t-call="web.html_container">
-            <t t-call="web.external_layout">
-                <div class="page">
-                    <h2>Reject Analysis Report</h2>
-                    <div class="row mt32 mb32">
-                        <div class="col-auto">
-                            <strong>Period:</strong>
-                            <p><span t-esc="data.get('start_datetime')"/> to <span t-esc="data.get('end_datetime')"/></p>
-                        </div>
-                    </div>
-
-                    <table class="table table-sm o_main_table table-bordered mt-4">
-                        <thead class="bg-light">
-                            <tr>
-                                <th class="text-left">Grouping Breakdown</th>
-                                <th class="text-right">Total Quantity (pcs)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <t t-set="total_qty" t-value="0"/>
-                            <t t-foreach="report_data" t-as="row">
-                                <t t-set="total_qty" t-value="total_qty + row['qty']"/>
-                                <tr>
-                                    <td><span t-esc="row['grp']"/></td>
-                                    <td class="text-right">
-                                        <span t-esc="'%.2f' % row['qty']"/>
-                                    </td>
-                                </tr>
-                            </t>
-                            <tr class="font-weight-bold bg-light">
-                                <td class="text-right">Grand Total:</td>
-                                <td class="text-right">
-                                    <span t-esc="'%.2f' % total_qty"/>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </t>
-        </t>
-    </template>
 </odoo>
