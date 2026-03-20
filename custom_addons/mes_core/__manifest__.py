@@ -31,6 +31,8 @@
         'views/mes_telemetry_views.xml',
         'views/mes_machine_settings_views.xml',
         'views/mes_report_base_views.xml',
+        
+        'wizard/mes_reject_report.xml',
 
         
 
