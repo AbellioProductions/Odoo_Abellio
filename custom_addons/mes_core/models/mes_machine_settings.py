@@ -96,22 +96,24 @@ class MesMachineSettings(models.Model):
 
         alarm_query = f"""
             WITH active_windows AS ( {active_cte} ),
-            alarm_boundary AS (
-                SELECT time, tag_name, value::text FROM telemetry_event
-                WHERE machine_name = %s AND time < %s ORDER BY time DESC LIMIT 1
+            boundary AS (
+                SELECT time, tag_name, value FROM telemetry_event
+                WHERE machine_name = %s AND time < %s 
+                ORDER BY time DESC LIMIT 1
             ),
-            alarm_events AS (
-                SELECT GREATEST(time, %s) as time, value::text FROM alarm_boundary WHERE tag_name LIKE %s UNION ALL
-                SELECT time, value::text FROM telemetry_event
-                WHERE machine_name = %s AND tag_name LIKE %s AND time >= %s AND time <= %s
+            events AS (
+                SELECT GREATEST(time, %s) as time, tag_name, value FROM boundary 
+                UNION ALL
+                SELECT time, tag_name, value FROM telemetry_event
+                WHERE machine_name = %s AND time >= %s AND time <= %s
             ),
             state_durations AS (
-                SELECT value as alarm_code, time as state_start,
+                SELECT tag_name, value as alarm_code, time as state_start,
                        COALESCE(LEAD(time) OVER (ORDER BY time ASC), %s) as state_end
-                FROM alarm_events
+                FROM events
             ),
             intersected_durations AS (
-                SELECT alarm_code,
+                SELECT tag_name, alarm_code,
                        GREATEST(state_start, aw.ai_start) as eff_start,
                        LEAST(state_end, aw.ai_end) as eff_end
                 FROM state_durations sd
@@ -119,13 +121,15 @@ class MesMachineSettings(models.Model):
             )
             SELECT alarm_code, SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))) as total_dur 
             FROM intersected_durations
-            WHERE alarm_code != '0' AND alarm_code != '' AND alarm_code IS NOT NULL AND eff_start < eff_end
+            WHERE tag_name LIKE %s AND alarm_code != 0 AND alarm_code IS NOT NULL AND eff_start < eff_end
             GROUP BY alarm_code 
             ORDER BY total_dur DESC LIMIT 1;
         """
         cursor.execute(alarm_query, (
             self.name, start_time,   
-            start_time, alarm_tag, self.name, alarm_tag, start_time, end_time, end_time
+            start_time, self.name, start_time, end_time,
+            end_time,
+            alarm_tag
         ))
         res_al = cursor.fetchone()
         
@@ -201,21 +205,20 @@ class MesMachineSettings(models.Model):
         query = f"""
             WITH active_windows AS ( {active_cte} ),
             boundary AS (
-                SELECT DISTINCT ON (tag_name)
-                    time, value, tag_name, 0::bigint as id 
+                SELECT time, value, tag_name, 0::bigint as id 
                 FROM telemetry_event
                 WHERE machine_name = %s AND time < %s 
-                ORDER BY tag_name, time DESC, id DESC
+                ORDER BY time DESC, id DESC LIMIT 1
             ),
             events AS (
-                SELECT GREATEST(time, %s) as time, value, tag_name, id FROM boundary WHERE tag_name = ANY(%s) 
+                SELECT GREATEST(time, %s) as time, value, tag_name, id FROM boundary 
                 UNION ALL
                 SELECT time, value, tag_name, id FROM telemetry_event
-                WHERE machine_name = %s AND tag_name = ANY(%s) AND time >= %s AND time <= %s
+                WHERE machine_name = %s AND time >= %s AND time <= %s
             ),
             state_durations AS (
                 SELECT id, tag_name, value, time as state_start,
-                       COALESCE(LEAD(time) OVER (PARTITION BY tag_name ORDER BY time ASC, id ASC), %s) as state_end
+                       COALESCE(LEAD(time) OVER (ORDER BY time ASC, id ASC), %s) as state_end
                 FROM events
             ),
             intersected_durations AS (
@@ -227,18 +230,20 @@ class MesMachineSettings(models.Model):
             )
         """
 
+        args = [
+            self.name, start_time,   
+            start_time, self.name, start_time, end_time,
+            end_time
+        ]
+
         if mode == 'runtime':
             query += """
                 SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))), 0)
                 FROM intersected_durations
-                WHERE tag_name = %s AND value = %s AND eff_start < eff_end
+                WHERE tag_name = ANY(%s) AND value = %s AND eff_start < eff_end
             """
-            cursor.execute(query, (
-                self.name, start_time,   
-                start_time, tags, self.name, tags, start_time, end_time,
-                end_time,
-                state_tag, state_val
-            ))
+            args.extend([tags, str(state_val)])
+            cursor.execute(query, tuple(args))
             res = cursor.fetchone()
             return float(res[0]) if res else 0.0
 
@@ -246,31 +251,24 @@ class MesMachineSettings(models.Model):
             query += """
                 SELECT tag_name, value as alarm_code, COUNT(DISTINCT id) as freq, SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))) as total_dur
                 FROM intersected_durations
-                WHERE value IS NOT NULL AND value != 0 AND eff_start < eff_end
+                WHERE tag_name = ANY(%s) AND eff_start < eff_end
                 GROUP BY tag_name, value
             """
-            cursor.execute(query, (
-                self.name, start_time,  
-                start_time, tags, self.name, tags, start_time, end_time,
-                end_time
-            ))
+            args.extend([tags])
+            cursor.execute(query, tuple(args))
             return cursor.fetchall()
             
         elif mode == 'first_start':
             query += """
                 SELECT MIN(eff_start)
                 FROM intersected_durations
-                WHERE tag_name = %s AND value = %s AND eff_start < eff_end
+                WHERE tag_name = ANY(%s) AND value = %s AND eff_start < eff_end
             """
-            cursor.execute(query, (
-                self.name, start_time,  
-                start_time, tags, self.name, tags, start_time, end_time,
-                end_time,
-                state_tag, state_val
-            ))
+            args.extend([tags, str(state_val)])
+            cursor.execute(query, tuple(args))
             res = cursor.fetchone()
             return res[0].replace(tzinfo=None) if res and res[0] else False
-
+        
     def _fetch_waste_stats_raw(self, cursor, start_time, end_time):
         query = """
             SELECT tag_name, 
@@ -795,6 +793,8 @@ class MesDowntimeLossStat(models.TransientModel):
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
                 active_intervals = machine._get_planned_working_intervals(start_time, shift_end, workcenter)[0]
+
+                _logger.info(f"Machine: {machine.id} - Active intervals for downtime {alarm_tag} stats: {active_intervals}")
                 
                 total_running_sec = machine._fetch_interval_stats(
                     cur, active_intervals, [state_tag], mode='runtime', state_tag=state_tag, state_val=running_plc_value

@@ -15,7 +15,7 @@ class MesPlannedDowntime(models.Model):
         ('weekend', 'Weekends')
     ], default='one_time', required=True)
 
-    machine_ids = fields.Many2many('mes.machine.settings')
+    machine_ids = fields.Many2many('mrp.workcenter', string='Affected Machines')
     
     date_start = fields.Datetime(required=True)
     date_end = fields.Datetime(required=True)
@@ -120,8 +120,8 @@ class MesFlatDowntime(models.Model):
     _description = 'Generated Downtime Schedule'
     _order = 'start_time asc'
 
-    machine_id = fields.Many2one('mes.machine.settings', required=True, ondelete='cascade')
-    rule_id = fields.Many2one('mes.planned.downtime', required=True, ondelete='cascade')
+    machine_id = fields.Many2one('mrp.workcenter', required=True, ondelete='cascade', string='Workcenter')
+    rule_id = fields.Many2one('mes.planned.downtime', required=True, ondelete='cascade', string='Downtime Rule')
     start_time = fields.Datetime(required=True)
     end_time = fields.Datetime(required=True)
 

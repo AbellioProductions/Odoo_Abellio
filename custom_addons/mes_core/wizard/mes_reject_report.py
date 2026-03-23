@@ -71,7 +71,6 @@ class MesRejectReportWizard(models.TransientModel):
                 for machine in machines:
                     workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
                     
-                    # 1. Получаем настройки сигналов прямо из Odoo ORM
                     signals = machine.count_tag_ids
                     if self.cnt_ids:
                         if self.cnt_filter_type == 'in':
@@ -95,7 +94,6 @@ class MesRejectReportWizard(models.TransientModel):
                             continue
 
                         for a_s, a_e in all_active_intervals:
-                            # 2. Запрашиваем только сырую телеметрию из TimescaleDB (БЕЗ JOIN)
                             cur.execute("""
                                 SELECT tag_name, 
                                        COALESCE(SUM(value), 0) as sum_val, 
@@ -108,7 +106,6 @@ class MesRejectReportWizard(models.TransientModel):
                             for row in cur.fetchall():
                                 t_name, sum_val, cum_val = row
                                 
-                                # 3. Склеиваем данные в Python с помощью Odoo ORM
                                 sig = signals.filtered(lambda s: s.tag_name == t_name)
                                 if not sig:
                                     continue
