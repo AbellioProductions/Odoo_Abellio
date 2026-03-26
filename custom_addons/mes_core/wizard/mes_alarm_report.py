@@ -43,7 +43,6 @@ class MesAlarmReportWizard(models.TransientModel):
             if not workcenter:
                 continue
 
-            # Получаем индивидуальные смены и периоды для машины в ее часовом поясе
             tz_name = workcenter.company_id.tz or 'UTC'
             shifts = self.env['mes.shift'].search([('company_id', '=', workcenter.company_id.id)], order='start_hour asc')
             periods_dict = self._get_logical_periods(self.start_datetime, self.end_datetime, shifts, tz_name)

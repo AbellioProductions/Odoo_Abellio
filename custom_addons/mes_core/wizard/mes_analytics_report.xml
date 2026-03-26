@@ -1,41 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-    <record id="view_mes_analytics_report_tree" model="ir.ui.view">
-        <field name="name">mes.analytics.report.line.tree</field>
-        <field name="model">mes.analytics.report.line</field>
-        <field name="arch" type="xml">
-            <tree string="Analytics List" 
-                  decoration-success="oee &gt;= 85" 
-                  decoration-warning="oee &gt;= 67 and oee &lt; 85" 
-                  decoration-danger="oee &lt; 67"
-                  create="false" edit="false" delete="false" default_order="oee desc">
-                <field name="row_group_label"/>
-                <field name="col_group_label"/>
-                <field name="first_running_time" optional="show"/>
-                <field name="produced" sum="Total Produced" class="text-center"/>
-                <field name="waste_losses" avg="Avg Waste" class="text-center"/>
-                <field name="downtime_losses" avg="Avg DT" class="text-center"/>
-                <field name="availability" avg="Avg Avail" class="text-center"/>
-                <field name="performance" avg="Avg Perf" class="text-center"/>
-                <field name="quality" avg="Avg Qual" class="text-center"/>
-                <field name="oee" avg="Avg OEE" class="text-center fw-bold"/>
-            </tree>
-        </field>
-    </record>
-
-    <record id="view_mes_analytics_report_pivot" model="ir.ui.view">
-        <field name="name">mes.analytics.report.line.pivot</field>
-        <field name="model">mes.analytics.report.line</field>
-        <field name="arch" type="xml">
-            <pivot string="Analytics Matrix" disable_linking="True">
-                <field name="row_group_label" type="row"/>
-                <field name="col_group_label" type="col"/>
-                <field name="oee" type="measure"/>
-            </pivot>
-        </field>
-    </record>
-
     <record id="view_mes_analytics_wizard_form" model="ir.ui.view">
         <field name="name">mes.analytics.wizard.form</field>
         <field name="model">mes.analytics.wizard</field>
@@ -44,36 +9,83 @@
         <field name="arch" type="xml">
             
             <xpath expr="//page[@name='measures_page']" position="inside">
-                <group string="KPI Measures">
+                <group name="metrics" string="Metrics to Display">
                     <group>
+                        <field name="show_produced"/>
+                        <field name="show_runtime"/>
+                        <field name="show_waste"/>
+                        <field name="show_downtime"/>
                         <field name="show_oee"/>
+                    </group>
+                    <group>
+                        <field name="show_top_reject"/>
+                        <field name="show_top_alarm"/>
                         <field name="show_availability"/>
                         <field name="show_performance"/>
                         <field name="show_quality"/>
                     </group>
-                    <group>
-                        <field name="show_produced"/>
-                        <field name="show_waste"/>
-                        <field name="show_downtime"/>
-                    </group>
                 </group>
             </xpath>
 
-            <xpath expr="//footer" position="replace">
-                <footer>
-                    <button name="action_generate_report" type="object" string="Generate Report" class="btn btn-primary"/>
-                    <button string="Cancel" class="btn btn-secondary" special="cancel"/>
-                </footer>
+            <xpath expr="//field[@name='limit_by']" position="replace">
+                <field name="limit_by"/>
             </xpath>
+            
+        </field>
+    </record>
 
+    <record id="view_mes_analytics_report_line_tree" model="ir.ui.view">
+        <field name="name">mes.analytics.report.line.tree</field>
+        <field name="model">mes.analytics.report.line</field>
+        <field name="arch" type="xml">
+            <tree string="Analytics Matrix" create="false" edit="false" delete="false">
+                <field name="machine_id" optional="show"/>
+                <field name="period_name" optional="show"/>
+                <field name="row_group_label"/>
+                <field name="col_group_label"/>
+                
+                <field name="produced"/>
+                <field name="runtime_hours" widget="float_time"/>
+                <field name="waste_losses" widget="percentage"/>
+                <field name="downtime_losses" widget="percentage"/>
+                <field name="oee" widget="percentage"/>
+                
+                <field name="top_reject"/>
+                <field name="top_alarm"/>
+                
+                <field name="availability" widget="percentage" optional="hide"/>
+                <field name="performance" widget="percentage" optional="hide"/>
+                <field name="quality" widget="percentage" optional="hide"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_mes_analytics_report_line_pivot" model="ir.ui.view">
+        <field name="name">mes.analytics.report.line.pivot</field>
+        <field name="model">mes.analytics.report.line</field>
+        <field name="arch" type="xml">
+            <pivot string="Analytics Matrix" display_quantity="false" disable_linking="True">
+                <field name="row_group_label" type="row"/>
+                <field name="col_group_label" type="col"/>
+                
+                <field name="produced" type="measure"/>
+                <field name="runtime_hours" type="measure"/>
+                <field name="waste_losses" type="measure"/>
+                <field name="downtime_losses" type="measure"/>
+                <field name="oee" type="measure"/>
+                
+                <field name="availability" type="measure" invisible="1"/>
+                <field name="performance" type="measure" invisible="1"/>
+                <field name="quality" type="measure" invisible="1"/>
+            </pivot>
         </field>
     </record>
 
     <record id="action_mes_analytics_wizard" model="ir.actions.act_window">
-        <field name="name">Shift Analytics Matrix</field>
+        <field name="name">Shift Analytics Dashboard</field>
         <field name="res_model">mes.analytics.wizard</field>
         <field name="view_mode">form</field>
-        <field name="target">new</field>
+        <field name="target">new</field> 
     </record>
 
 </odoo>
