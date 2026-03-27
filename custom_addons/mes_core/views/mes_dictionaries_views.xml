@@ -404,6 +404,28 @@
                         </group>
                     </group>
                 </page>
+
+                <page string="Logger Health" name="logger_health" groups="mes_core.group_mes_administrator">
+                    <group>
+                        <group string="Connection &amp; Config">
+                            <field name="log_conn_dt" readonly="1" string="Last Authenticated"/>
+                            <field name="log_cfg_req_dt" readonly="1" string="Config Requested"/>
+                            <field name="log_cfg_ok_dt" readonly="1" string="Config Received"/>
+                        </group>
+                        <group string="PLC Bindings">
+                            <field name="log_bind_req_dt" readonly="1" string="Binding Started"/>
+                            <field name="log_bind_ok_dt" readonly="1" string="Binding Successful"/>
+                        </group>
+                        <group string="Data Flow">
+                            <field name="log_plc_recv_dt" readonly="1" string="Last PLC Event"/>
+                            <field name="log_odoo_send_dt" readonly="1" string="Last Sent to Odoo"/>
+                        </group>
+                        <group string="Recent Errors">
+                            <field name="log_err_dt" readonly="1" string="Error Time"/>
+                            <field name="log_err_msg" readonly="1" string="Error Message" decoration-danger="log_err_msg != False"/>
+                        </group>
+                    </group>
+                </page>
             </xpath>
             
         </field>

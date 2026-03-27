@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_mrp_workcenter_form_inherit_idle" model="ir.ui.view">
+        <field name="name">mrp.workcenter.form.inherit.idle</field>
+        <field name="model">mrp.workcenter</field>
+        <field name="inherit_id" ref="mrp.mrp_workcenter_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@name='general_info']" position="inside">
+                <group string="Idle Allocation">
+                    <field name="auto_assign_idle_min"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_mes_machine_operation_tree" model="ir.ui.view">
+        <field name="name">mes.machine.operation.tree</field>
+        <field name="model">mes.machine.operation</field>
+        <field name="arch" type="xml">
+            <tree string="Machine Operations" decoration-danger="op_type=='idle'" decoration-muted="op_type=='waste'" decoration-success="op_type=='job'">
+                <field name="workcenter_id"/>
+                <field name="job_number"/>
+                <field name="report_id"/>
+                <field name="start_dt"/>
+                <field name="end_dt"/>
+                <field name="duration_min"/>
+                <field name="op_type"/>
+                <button name="action_split_interval" type="object" icon="fa-scissors" string="Split"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_mes_supervisor_dashboard_tree" model="ir.ui.view">
+        <field name="name">mes.machine.operation.supervisor.tree</field>
+        <field name="model">mes.machine.operation</field>
+        <field name="arch" type="xml">
+            <tree string="Unallocated Operations" create="false">
+                <field name="workcenter_id"/>
+                <field name="start_dt"/>
+                <field name="end_dt"/>
+                <field name="duration_min" sum="Total Duration"/>
+                <button name="action_assign_job" type="object" string="Assign to Job" class="btn-primary"/>
+                <button name="action_mark_waste" type="object" string="Write off as Waste" class="btn-secondary"/>
+                <button name="action_split_interval" type="object" icon="fa-scissors" string="Split"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_mes_operation_assign_wizard_form" model="ir.ui.view">
+        <field name="name">mes.operation.assign.wizard.form</field>
+        <field name="model">mes.operation.assign.wizard</field>
+        <field name="arch" type="xml">
+            <form>
+                <group>
+                    <field name="workcenter_id" invisible="1"/>
+                    <field name="machine_id" invisible="1"/>
+                    <field name="report_id" options="{'no_create': True}"/>
+                </group>
+                <footer>
+                    <button string="Confirm" name="action_confirm" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_mes_operation_split_wizard_form" model="ir.ui.view">
+        <field name="name">mes.operation.split.wizard.form</field>
+        <field name="model">mes.operation.split.wizard</field>
+        <field name="arch" type="xml">
+            <form>
+                <group>
+                    <field name="split_dt"/>
+                </group>
+                <footer>
+                    <button string="Split" name="action_confirm" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_mes_supervisor_dashboard" model="ir.actions.act_window">
+        <field name="name">Supervisor Dashboard</field>
+        <field name="res_model">mes.machine.operation</field>
+        <field name="view_mode">tree,form</field>
+        <field name="view_id" ref="view_mes_supervisor_dashboard_tree"/>
+        <field name="domain">[('op_type', '=', 'idle')]</field>
+    </record>
+
+    <record id="action_mes_machine_operations" model="ir.actions.act_window">
+        <field name="name">Machine Operations</field>
+        <field name="res_model">mes.machine.operation</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <menuitem id="menu_mes_supervisor_dashboard"
+              name="Supervisor Dashboard"
+              parent="mes_core.menu_mes_analytics"
+              action="action_mes_supervisor_dashboard"
+              sequence="30"/>
+
+    <menuitem id="menu_mes_machine_operations"
+              name="Machine Operations Logs"
+              parent="mes_core.menu_mes_documents"
+              action="action_mes_machine_operations"
+              sequence="50"/>
+
+</odoo>

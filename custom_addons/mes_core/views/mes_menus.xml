@@ -13,6 +13,12 @@
               sequence="100" 
               groups="mes_core.group_mes_manager"/>
 
+    <menuitem id="menu_mes_tools" 
+              name="Tools" 
+              parent="menu_mes_root" 
+              sequence="100" 
+              groups="mes_core.group_mes_manager"/>
+
     <!-- Documents -->
     <menuitem id="menu_mes_machine_performance" 
               name="Machine Performance" 
@@ -146,6 +152,19 @@
               parent="menu_mes_telemetry_config"
               action="action_mes_machine_settings"
               sequence="10"/>
+
+    <!-- Toold -->
+    <menuitem id="menu_mes_machines_operation" 
+              name="Mschines opertaion" 
+              parent="menu_mes_tools" 
+              action="action_mes_machine_operations" 
+              sequence="10"/>
+
+    <menuitem id="menu_mes_supervisor_dashboard" 
+              name="Supervisor Dashboard" 
+              parent="menu_mes_tools" 
+              action="action_mes_supervisor_dashboard" 
+              sequence="15"/>
 
 <!--
     <menuitem id="menu_mes_init_db"

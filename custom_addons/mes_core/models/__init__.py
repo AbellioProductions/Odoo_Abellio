@@ -8,3 +8,5 @@ from . import mes_telemetry_stats
 from . import mes_planned_downtime
 from . import mes_machine_settings
 from . import mes_report_base
+from . import mes_machine_operation
+from . import mes_logger_status

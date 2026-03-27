@@ -131,3 +131,37 @@ class MesTelemetryImportAPI(http.Controller):
                 })
 
         return {'tags': tags_config}
+
+    @http.route('/mes/api/logger/status', type='json', auth='user', methods=['POST'], csrf=False)
+    def update_logger_status(self, mac_name, evt_type, ts, err_msg=None, **kwargs):
+        try:
+            mac = request.env['mes.machine.settings'].sudo().search([('name', '=', mac_name)], limit=1)
+            if not mac:
+                return {'status': 'error', 'msg': 'mac_not_found'}
+
+            dt_val = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+            vals = {}
+            
+            f_map = {
+                'conn': 'log_conn_dt',
+                'cfg_req': 'log_cfg_req_dt',
+                'cfg_ok': 'log_cfg_ok_dt',
+                'bind_req': 'log_bind_req_dt',
+                'bind_ok': 'log_bind_ok_dt',
+                'plc_recv': 'log_plc_recv_dt',
+                'odoo_send': 'log_odoo_send_dt',
+                'err': 'log_err_dt'
+            }
+
+            if evt_type in f_map:
+                vals[f_map[evt_type]] = dt_val
+            
+            if evt_type == 'err' and err_msg:
+                vals['log_err_msg'] = err_msg
+
+            if vals:
+                mac.write(vals)
+
+            return {'status': 'ok'}
+        except Exception as e:
+            return {'status': 'error', 'msg': str(e)}

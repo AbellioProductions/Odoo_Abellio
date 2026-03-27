@@ -22,6 +22,9 @@ access_mes_csv_wiz_admin,mes.csv.wiz.admin,model_mes_raw_data_csv_import_wizard,
 access_mes_fdw_hour_admin,mes.fdw.hour.admin,model_mes_telemetry_hourly_fdw,mes_core.group_mes_administrator,1,0,0,0
 access_mes_fdw_anom_admin,mes.fdw.anom.admin,model_mes_anomaly_fdw,mes_core.group_mes_administrator,1,0,0,0
 
+
+access_mes_mach_op_admin,mes.mach.op.admin,model_mes_machine_operation,mes_core.group_mes_administrator,1,1,1,1
+
 access_mes_mach_perf_admin,mes.mach.perf.admin,model_mes_machine_performance,mes_core.group_mes_administrator,1,1,1,1
 access_mes_perf_alarm_admin,mes.perf.alarm.admin,model_mes_performance_alarm,mes_core.group_mes_administrator,1,1,1,1
 access_mes_perf_rej_admin,mes.perf.rej.admin,model_mes_performance_rejection,mes_core.group_mes_administrator,1,1,1,1
@@ -74,6 +77,9 @@ access_mes_csv_wiz_manager,mes.csv.wiz.manager,model_mes_raw_data_csv_import_wiz
 
 access_mes_fdw_hour_manager,mes.fdw.hour.manager,model_mes_telemetry_hourly_fdw,mes_core.group_mes_manager,1,0,0,0
 access_mes_fdw_anom_manager,mes.fdw.anom.manager,model_mes_anomaly_fdw,mes_core.group_mes_manager,1,0,0,0
+
+
+access_mes_mach_op_admin,mes.mach.op.admin,model_mes_machine_operation,mes_core.group_mes_manager,1,0,0,0
 
 access_mes_mach_perf_manager,mes.mach.perf.manager,model_mes_machine_performance,mes_core.group_mes_manager,1,0,0,0
 access_mes_perf_alarm_manager,mes.perf.alarm.manager,model_mes_performance_alarm,mes_core.group_mes_manager,1,0,0,0

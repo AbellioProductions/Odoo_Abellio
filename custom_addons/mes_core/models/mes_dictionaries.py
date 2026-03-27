@@ -319,7 +319,7 @@ class MesWorkcenter(models.Model):
     current_availability = fields.Float(string="Availability (%)", readonly=True, default=0.0)
     current_performance = fields.Float(string="Performance (%)", readonly=True, default=0.0)
     current_quality = fields.Float(string="Quality (%)", readonly=True, default=0.0)
-    current_produced = fields.Integer(string="Produced", readonly=True, default=0)
+    current_produced = fields.Float(string="Produced", digits=(16, 0), readonly=True, default=0)
     current_waste_losses = fields.Float(string="Waste Losses", readonly=True, default=0.0)
     current_downtime_losses = fields.Float(string="Downtime Losses", readonly=True, default=0.0)
     current_first_running_time = fields.Datetime(string="First Running Time", readonly=True)
