@@ -109,7 +109,8 @@ class MesTelemetryImportAPI(http.Controller):
                     'tag_name': ct.tag_name,
                     'type': 'count',
                     'mode': ct.poll_type,
-                    'interval_sec': (ct.poll_frequency or 1000) / 1000.0
+                    'interval_sec': (ct.poll_frequency or 1000) / 1000.0,
+                    'is_cumul': bool(ct.is_cumulative)
                 })
 
         for et in machine.event_tag_ids:
@@ -118,7 +119,8 @@ class MesTelemetryImportAPI(http.Controller):
                     'tag_name': et.tag_name,
                     'type': 'event',
                     'mode': et.poll_type,
-                    'interval_sec': (et.poll_frequency or 1000) / 1000.0
+                    'interval_sec': (et.poll_frequency or 1000) / 1000.0,
+                    'is_cumul': False
                 })
 
         for pt in machine.process_tag_ids:
@@ -127,7 +129,8 @@ class MesTelemetryImportAPI(http.Controller):
                     'tag_name': pt.tag_name,
                     'type': 'process',
                     'mode': pt.poll_type,
-                    'interval_sec': (pt.poll_frequency or 1000) / 1000.0
+                    'interval_sec': (pt.poll_frequency or 1000) / 1000.0,
+                    'is_cumul': False
                 })
 
         return {'tags': tags_config}
