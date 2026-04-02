@@ -43,7 +43,6 @@ class MesHistPerformanceWiz(models.TransientModel):
 
     @api.model
     def _run_in_background(self, db_name, uid, context, start_date, end_date, machine_ids):
-        """Метод выполняется в изолированном потоке вне HTTP-запроса Nginx"""
         registry = odoo.registry(db_name)
         
         with registry.cursor() as cr:

@@ -182,7 +182,7 @@
     <menuitem id="menu_mes_recalc_downtime" 
               name="Recalculate Downtime" 
               parent="menu_mes_tools" 
-              action="action_mes_recalc_downtime" 
+              action="action_mes_recalc_downtime_wiz" 
               sequence="30"/>
 
 <!--

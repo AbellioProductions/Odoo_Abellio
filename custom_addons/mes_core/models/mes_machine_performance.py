@@ -146,16 +146,17 @@ class MesMachinePerformance(models.Model):
             tgt_mod = 'mes.performance.slowing'
 
         if tag == 'OEE.nStopRootReason':
-            if val != 0:
+            is_val_empty = val == 0 or val == '' or val is None
+            if not is_val_empty:
                 if opn and opn._name == 'mes.performance.alarm':
-                    is_generic = (opn.loss_id.default_event_tag_type == 'OEE.nMachineState' and opn.loss_id.default_plc_value == 1)
-                    if is_generic:
+                    is_gen = (opn.loss_id.default_event_tag_type == 'OEE.nMachineState' and opn.loss_id.default_plc_value == 1)
+                    if is_gen:
                         opn.write({'loss_id': evt.id})
                 return
             else:
                 if opn and opn._name == 'mes.performance.alarm':
-                    is_generic = (opn.loss_id.default_event_tag_type == 'OEE.nMachineState' and opn.loss_id.default_plc_value == 1)
-                    if is_generic:
+                    is_gen = (opn.loss_id.default_event_tag_type == 'OEE.nMachineState' and opn.loss_id.default_plc_value == 1)
+                    if is_gen:
                         tgt_mod = 'mes.performance.slowing'
                     else:
                         return
@@ -166,42 +167,54 @@ class MesMachinePerformance(models.Model):
             return
 
         if tgt_mod == 'mes.performance.alarm' and tag == 'OEE.nMachineState' and val == 1:
-            evt_to_use = evt
-            
+            evt_use = evt
             from datetime import timedelta
-            last_run = self.env['mes.performance.running'].search([('performance_id', '=', self.id)], order='start_time desc', limit=1)
-            search_start = last_run.start_time if last_run else (ts - timedelta(hours=12))
+            
+            last_run = self.env['mes.performance.running'].search([
+                ('performance_id', '=', self.id),
+                ('start_time', '<=', ts)
+            ], order='start_time desc', limit=1)
+            
+            s_start = last_run.start_time if last_run else (ts - timedelta(hours=12))
             
             mac = wc.machine_settings_id
-            reason_tag = mac.get_alarm_tag_name('OEE.nStopRootReason').replace('%', '')
+            rsn_tag = mac.get_alarm_tag_name('OEE.nStopRootReason').replace('%', '')
             
             try:
                 with self.env['mes.timescale.base']._connection() as conn:
                     with conn.cursor() as cur:
+                        s_str = s_start.strftime('%Y-%m-%d %H:%M:%S.%f+00')
+                        e_str = ts.strftime('%Y-%m-%d %H:%M:%S.%f+00')
+                        
                         cur.execute("""
                             SELECT value FROM telemetry_event 
-                            WHERE machine_name = %s 
-                              AND tag_name = %s 
-                              AND time >= %s AND time <= %s
+                            WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
                             ORDER BY time DESC LIMIT 1
-                        """, (mac.name, reason_tag, search_start.strftime('%Y-%m-%d %H:%M:%S'), ts.strftime('%Y-%m-%d %H:%M:%S')))
+                        """, (mac.name, rsn_tag, s_str, e_str))
                         row = cur.fetchone()
                         
-                        if row and row[0] != 0:
-                            reason_evt = self._resolve_evt(mac, reason_tag, int(row[0]))
-                            if reason_evt:
-                                evt_to_use = reason_evt
-            except Exception as e:
-                pass 
+                        if row and row[0] is not None:
+                            raw_v = str(row[0]).strip()
+                            if raw_v:
+                                try:
+                                    v_int = int(float(raw_v))
+                                    if v_int != 0:
+                                        rsn_evt = self._resolve_evt(mac, rsn_tag, v_int)
+                                        if rsn_evt:
+                                            evt_use = rsn_evt
+                                except ValueError:
+                                    pass
+            except Exception:
+                pass
 
             if opn:
-                if opn._name == tgt_mod and opn.loss_id.id == evt_to_use.id:
+                if opn._name == tgt_mod and opn.loss_id.id == evt_use.id:
                     return
                 opn.write({'end_time': ts})
                 
             self.env[tgt_mod].create({
                 'performance_id': self.id,
-                'loss_id': evt_to_use.id,
+                'loss_id': evt_use.id,
                 'start_time': ts
             })
             return
