@@ -96,7 +96,7 @@ class MesMachineSettings(models.Model):
         query = f"""
             WITH active_windows AS ( {active_cte} ),
             alarms AS (
-                SELECT a.loss_id, a.start_time, COALESCE(a.end_time, %s) as end_time
+                SELECT DISTINCT a.loss_id, a.start_time, COALESCE(a.end_time, %s) as end_time
                 FROM mes_performance_alarm a
                 JOIN mes_machine_performance p ON p.id = a.performance_id
                 WHERE p.machine_id = %s AND a.start_time < %s AND (a.end_time > %s OR a.end_time IS NULL)
@@ -125,12 +125,22 @@ class MesMachineSettings(models.Model):
         return "None"
 
     def _get_planned_working_intervals(self, start_time, end_time, workcenter):
+
         now_utc = fields.Datetime.now()
+        
         if workcenter:
-            mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
+            tz_str = workcenter.company_id.tz or 'UTC'
+            mac_tz = pytz.timezone(tz_str)
+            
             now_mac = pytz.utc.localize(now_utc).astimezone(mac_tz).replace(tzinfo=None)
+            
+            s_utc = mac_tz.localize(start_time, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+            e_utc = mac_tz.localize(min(now_mac, end_time), is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
         else:
             now_mac = now_utc
+            s_utc = start_time
+            e_utc = min(now_utc, end_time)
+
         calc_end_time = min(now_mac, end_time)
 
         if start_time >= calc_end_time:
@@ -141,17 +151,18 @@ class MesMachineSettings(models.Model):
 
         downtimes = self.env['mes.flat.downtime'].search([
             ('machine_id', '=', workcenter.id),
-            ('start_time', '<', calc_end_time),
-            ('end_time', '>', start_time)
+            ('start_time', '<', e_utc),
+            ('end_time', '>', s_utc)
         ])
 
         intervals = []
         for dt in downtimes:
-            dt_start = dt.start_time
-            dt_end = dt.end_time
+            dt_s_loc = pytz.utc.localize(dt.start_time).astimezone(mac_tz).replace(tzinfo=None)
+            dt_e_loc = pytz.utc.localize(dt.end_time).astimezone(mac_tz).replace(tzinfo=None)
+            
 
-            dt_s = max(dt_start, start_time)
-            dt_e = min(dt_end, calc_end_time)
+            dt_s = max(dt_s_loc, start_time)
+            dt_e = min(dt_e_loc, calc_end_time)
 
             if dt_s < dt_e:
                 intervals.append([dt_s, dt_e])
@@ -166,6 +177,7 @@ class MesMachineSettings(models.Model):
                     dt_merged[-1] = [last[0], max(last[1], current[1])]
                 else:
                     dt_merged.append(current)
+                
 
         active_intervals = []
         current_time = start_time
@@ -206,7 +218,7 @@ class MesMachineSettings(models.Model):
             query = f"""
                 WITH active_windows AS ( {active_cte} ),
                 runs AS (
-                    SELECT start_time, COALESCE(end_time, %s) as end_time
+                    SELECT DISTINCT start_time, COALESCE(end_time, %s) as end_time
                     FROM {tbl} r
                     JOIN mes_machine_performance p ON p.id = r.performance_id
                     WHERE p.machine_id = %s AND start_time < %s AND (end_time > %s OR end_time IS NULL)
@@ -228,7 +240,7 @@ class MesMachineSettings(models.Model):
             query = f"""
                 WITH active_windows AS ( {active_cte} ),
                 alarms AS (
-                    SELECT loss_id, start_time, COALESCE(end_time, %s) as end_time
+                    SELECT DISTINCT loss_id, start_time, COALESCE(end_time, %s) as end_time
                     FROM {tbl} a
                     JOIN mes_machine_performance p ON p.id = a.performance_id
                     WHERE p.machine_id = %s AND start_time < %s AND (end_time > %s OR end_time IS NULL)
@@ -251,7 +263,7 @@ class MesMachineSettings(models.Model):
             query = f"""
                 WITH active_windows AS ( {active_cte} ),
                 runs AS (
-                    SELECT start_time, COALESCE(end_time, %s) as end_time
+                    SELECT DISTINCT start_time, COALESCE(end_time, %s) as end_time
                     FROM {tbl} r
                     JOIN mes_machine_performance p ON p.id = r.performance_id
                     WHERE p.machine_id = %s AND start_time < %s AND (end_time > %s OR end_time IS NULL)

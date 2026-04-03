@@ -2,6 +2,10 @@ from datetime import datetime, time, timedelta
 import pytz
 from odoo import models, fields, api
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
 class MesMachinePerformance(models.Model):
     _name = 'mes.machine.performance'
     _description = 'Machine Performance Data (OEE)'
@@ -190,10 +194,10 @@ class MesMachinePerformance(models.Model):
 
                 with self.env['mes.timescale.base']._connection() as conn:
                     with conn.cursor() as cur:
-                        # Используем локальное время для поиска по телеметрии
+                        
                         s_str = s_start_loc.strftime('%Y-%m-%d %H:%M:%S.%f+00')
                         e_str = ts_loc.strftime('%Y-%m-%d %H:%M:%S.%f+00')
-                        
+
                         cur.execute("""
                             SELECT value FROM telemetry_event 
                             WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s

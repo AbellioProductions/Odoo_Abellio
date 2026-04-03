@@ -83,7 +83,6 @@ class MesHistPerformanceWiz(models.TransientModel):
                     cr.commit() 
                     env.clear()  
                     
-                _logger.info("Historical shift generation completed successfully.")
                 
             except Exception as e:
                 cr.rollback()

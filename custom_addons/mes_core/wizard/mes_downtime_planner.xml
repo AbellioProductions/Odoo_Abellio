@@ -19,23 +19,29 @@
                             </group>
                             
                             <group invisible="creation_mode != 'shift'">
-                                <field name="shift_id" widget="radio" nolabel="1" required="creation_mode == 'shift'"/>
+                                <field name="shift_id" widget="radio" nolabel="1"/>
                             </group>
-                            
+                                                        
                             <group invisible="creation_mode != 'custom'">
-                                <field name="custom_start" required="creation_mode == 'custom'"/>
-                                <field name="custom_end" required="creation_mode == 'custom'"/>
+                                <field name="custom_start"/>
+                                <field name="custom_end"/>
                             </group>
                         </div>
                         
                         <div class="col-8">
                             <h2>Existing Downtimes on Selected Date</h2>
-                            <field name="existing_downtime_ids" nolabel="1" readonly="1">
-                                <tree>
-                                    <field name="start_time" string="Start"/>
-                                    <field name="end_time" string="End"/>
-                                    <field name="machine_id" string="Mac."/>
-                                    <field name="rule_id" string="Reason"/>
+                            <field name="existing_downtime_ids" nolabel="1">
+                                <tree create="0" edit="0" delete="0">
+                                    <field name="start_time" string="Start" readonly="1"/>
+                                    <field name="end_time" string="End" readonly="1"/>
+                                    <field name="machine_id" string="Mac." readonly="1"/>
+                                    <field name="rule_id" string="Reason" readonly="1"/>
+                                    <button name="action_delete_from_wizard" 
+                                            type="object" 
+                                            icon="fa-trash" 
+                                            class="btn text-danger" 
+                                            title="Delete Downtime" 
+                                            confirm="Are you sure you want to completely delete this downtime?"/>
                                 </tree>
                             </field>
                         </div>

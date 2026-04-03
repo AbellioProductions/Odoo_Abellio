@@ -605,10 +605,6 @@ class MesWorkcenter(models.Model):
             })
         return result
 
-from odoo import models, fields, api
-
-from odoo import models, fields, api
-
 class MesHistDashboardWiz(models.TransientModel):
     _name = 'mes.hist.dashboard.wiz'
     _description = 'Historical Chart Wizard'

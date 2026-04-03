@@ -135,3 +135,21 @@ class MesFlatDowntime(models.Model):
                 rec.duration = delta.total_seconds() / 3600.0
             else:
                 rec.duration = 0.0
+
+    def action_delete_from_wizard(self):
+        wizard_id = self.env.context.get('active_id')
+        wizard_model = self.env.context.get('active_model')
+        
+        for rec in self:
+            rec.unlink()
+            
+        if wizard_id and wizard_model:
+            return {
+                'type': 'ir.actions.act_window',
+                'res_model': wizard_model,
+                'res_id': wizard_id,
+                'view_mode': 'form',
+                'target': 'new',
+            }
+            
+        return {'type': 'ir.actions.client', 'tag': 'reload'}

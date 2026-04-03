@@ -130,8 +130,6 @@ class MesHistPerformanceWiz(models.TransientModel):
                     self._process_single_shift(env, item, now_utc)
                     cr.commit()
                     env.clear()
-                    
-                _logger.info("Historical shift generation completed successfully.")
                 
             except Exception as e:
                 cr.rollback()

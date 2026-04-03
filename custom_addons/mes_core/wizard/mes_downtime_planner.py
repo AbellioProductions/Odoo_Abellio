@@ -1,6 +1,7 @@
 from odoo import models, fields, api
 from datetime import datetime, time, timedelta
 import pytz
+from odoo.exceptions import ValidationError
 
 class MesDowntimePlannerWizard(models.TransientModel):
     _name = 'mes.downtime.planner.wizard'
@@ -54,6 +55,10 @@ class MesDowntimePlannerWizard(models.TransientModel):
 
     def action_continue_to_rule(self):
         self.ensure_one()
+
+        if self.creation_mode == 'shift' and not self.shift_id:
+            raise ValidationError("Please select a Shift before continuing.")
+
         user_tz = self.env.context.get('tz') or self.env.user.tz or 'UTC'
         tz = pytz.timezone(user_tz)
         

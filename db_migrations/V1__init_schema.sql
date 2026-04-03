@@ -81,9 +81,9 @@ WITH last_hour AS (
     GROUP BY machine_name
 ),
 monthly_avg AS (
-    SELECT machine_name, COUNT(*) / 30.0 as avg_daily_stops 
+    SELECT machine_name, COUNT(*) / 14.0 as avg_daily_stops 
     FROM telemetry_event 
-    WHERE time > NOW() - INTERVAL '30 days' AND value = 0
+    WHERE time > NOW() - INTERVAL '14 days' AND value = 0
     GROUP BY machine_name
 )
 SELECT 
@@ -108,7 +108,7 @@ BEGIN
         );
     END IF;
 END $$;
-SELECT add_compression_policy('telemetry_count', INTERVAL '30 days', if_not_exists => TRUE);
+SELECT add_compression_policy('telemetry_count', INTERVAL '14 days', if_not_exists => TRUE);
 
 DO $$ 
 BEGIN 
@@ -120,7 +120,7 @@ BEGIN
         );
     END IF;
 END $$;
-SELECT add_compression_policy('telemetry_event', INTERVAL '30 days', if_not_exists => TRUE);
+SELECT add_compression_policy('telemetry_event', INTERVAL '14 days', if_not_exists => TRUE);
 
 DO $$ 
 BEGIN 
@@ -132,4 +132,4 @@ BEGIN
         );
     END IF;
 END $$;
-SELECT add_compression_policy('telemetry_process', INTERVAL '30 days', if_not_exists => TRUE);
+SELECT add_compression_policy('telemetry_process', INTERVAL '14 days', if_not_exists => TRUE);
