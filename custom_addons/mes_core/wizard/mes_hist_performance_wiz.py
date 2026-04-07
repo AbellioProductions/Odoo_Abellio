@@ -21,6 +21,8 @@ class MesHistPerformanceWiz(models.TransientModel):
         uid = self.env.uid
         context = self.env.context.copy()
         
+        _logger.info("WIZARD_INIT: Starting thread for %s machines", len(self.machine_ids))
+        
         thread = threading.Thread(
             target=self._run_in_background,
             args=(db_name, uid, context, self.start_date, self.end_date, self.machine_ids.ids)
@@ -72,15 +74,20 @@ class MesHistPerformanceWiz(models.TransientModel):
                         curr_t += timedelta(days=1)
                         
                 queue.sort(key=lambda x: x['s_utc'])
+                
+                _logger.info("WIZARD_QUEUE: Built queue with %s shift windows to process", len(queue))
 
                 for item in queue:
                     self._process_single_shift_fsm(env, item, now_utc)
                     cr.commit() 
                     env.clear()  
                     
+                _logger.info("WIZARD_COMPLETE: All items processed successfully")
+                    
             except Exception as e:
                 cr.rollback()
-                _logger.error("WIZARD_FAULT: Critical failure in background thread!\nError: %s\n%s", str(e), traceback.format_exc())
+                error_msg = f"WIZARD_FAULT: Critical failure in background thread!\nError: {str(e)}\n{traceback.format_exc()}"
+                _logger.error(error_msg)
 
     @api.model
     def _process_single_shift_fsm(self, env, item, now_utc):
@@ -158,10 +165,11 @@ class MesHistPerformanceWiz(models.TransientModel):
         for row in events:
             ts_raw, tag, val = row
             
+            # STRIP FAKE UTC TZINFO FROM PSYCOPG2
             if isinstance(ts_raw, str):
                 ts_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
             else:
-                ts_dt = ts_raw
+                ts_dt = ts_raw.replace(tzinfo=None)
                 
             evt_utc = self._get_utc(wc, ts_dt)
 

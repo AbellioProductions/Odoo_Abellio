@@ -1,4 +1,3 @@
-import math
 import pytz
 import logging
 from datetime import datetime, timedelta
@@ -58,21 +57,17 @@ class MesMachineSettings(models.Model):
         self.ensure_one()
         plc_str = str(plc_value)
         
-        if not plc_str.isdigit():
-            return plc_str
+        if not plc_str.isdigit(): return plc_str
             
         plc_int = int(plc_str)
         override = self.env['mes.signal.event'].search([('machine_id', '=', self.id), ('plc_value', '=', plc_int)], limit=1)
-        if override and override.event_id:
-            return override.event_id.name
+        if override and override.event_id: return override.event_id.name
             
         dict_event = self.env['mes.event'].search([('default_plc_value', '=', plc_int)], limit=1)
         return dict_event.name if dict_event else plc_str
 
-
-    def _build_intersection_sql(self, active_intervals, tbl_name):
-        """Generates the unified CTE for intersecting real logs with planned working windows."""
-        val_list = [f"('{s.isoformat()}'::timestamp, '{e.isoformat()}'::timestamp)" for s, e in active_intervals]
+    def _build_intersection_sql(self, active_intervals_utc, tbl_name):
+        val_list = [f"('{s.isoformat()}'::timestamp, '{e.isoformat()}'::timestamp)" for s, e in active_intervals_utc]
         active_cte = "SELECT * FROM (VALUES " + ", ".join(val_list) + ") AS ai(ai_start, ai_end)"
 
         return f"""
@@ -95,22 +90,21 @@ class MesMachineSettings(models.Model):
             )
         """
 
-    def get_top_alarm_str(self, active_intervals, wc_id):
-        if not active_intervals:
-            return "None"
-
+    def get_top_alarm_str(self, active_intervals_utc, wc_id):
+        if not active_intervals_utc: return "None"
         now_utc = fields.Datetime.now()
-        start_time, end_time = active_intervals[0][0], active_intervals[-1][1]
-        min_doc_date = (start_time - timedelta(days=1)).date()
+        start_utc, end_utc = active_intervals_utc[0][0], active_intervals_utc[-1][1]
+        
+        wc = self.env['mrp.workcenter'].browse(wc_id)
+        mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
+        start_local = pytz.utc.localize(start_utc).astimezone(mac_tz).replace(tzinfo=None)
+        min_doc_date = (start_local - timedelta(days=1)).date()
 
-        query = self._build_intersection_sql(active_intervals, 'mes_performance_alarm') + """
+        query = self._build_intersection_sql(active_intervals_utc, 'mes_performance_alarm') + """
             SELECT loss_id, SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))) as total_dur 
-            FROM intersected
-            WHERE eff_start < eff_end
-            GROUP BY loss_id 
-            ORDER BY total_dur DESC LIMIT 1;
+            FROM intersected WHERE eff_start < eff_end GROUP BY loss_id ORDER BY total_dur DESC LIMIT 1;
         """
-        self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_time, start_time))
+        self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_utc, start_utc))
         res = self.env.cr.fetchone()
         
         if res and res[0]:
@@ -118,13 +112,17 @@ class MesMachineSettings(models.Model):
             return f"{loss.name} ({int((res[1] or 0) // 60)} min)"
         return "None"
 
-    def _fetch_interval_stats(self, active_intervals, wc_id, mode='runtime'):
-        if not active_intervals:
+    def _fetch_interval_stats(self, active_intervals_utc, wc_id, mode='runtime'):
+        if not active_intervals_utc:
             return [] if mode == 'downtime' else False if mode == 'first_start' else 0.0
 
         now_utc = fields.Datetime.now()
-        start_time, end_time = active_intervals[0][0], active_intervals[-1][1]
-        min_doc_date = (start_time - timedelta(days=1)).date()
+        start_utc, end_utc = active_intervals_utc[0][0], active_intervals_utc[-1][1]
+        
+        wc = self.env['mrp.workcenter'].browse(wc_id)
+        mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
+        start_local = pytz.utc.localize(start_utc).astimezone(mac_tz).replace(tzinfo=None)
+        min_doc_date = (start_local - timedelta(days=1)).date()
 
         table_map = {
             'runtime': 'mes_performance_running',
@@ -133,55 +131,42 @@ class MesMachineSettings(models.Model):
             'first_start': 'mes_performance_running'
         }
         
-        base_query = self._build_intersection_sql(active_intervals, table_map.get(mode))
+        base_query = self._build_intersection_sql(active_intervals_utc, table_map.get(mode))
 
         if mode == 'runtime':
             query = base_query + "SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))), 0) FROM intersected WHERE eff_start < eff_end"
-            self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_time, start_time))
+            self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_utc, start_utc))
             return float(self.env.cr.fetchone()[0] or 0.0)
-
         elif mode == 'downtime':
-            query = base_query + """
-                SELECT loss_id, COUNT(DISTINCT id) as freq, COALESCE(SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))), 0) as total_dur
-                FROM intersected WHERE eff_start < eff_end GROUP BY loss_id
-            """
-            self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_time, start_time))
+            query = base_query + "SELECT loss_id, COUNT(DISTINCT id) as freq, COALESCE(SUM(EXTRACT(EPOCH FROM (eff_end - eff_start))), 0) as total_dur FROM intersected WHERE eff_start < eff_end GROUP BY loss_id"
+            self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_utc, start_utc))
             return self.env.cr.fetchall()
-
         elif mode == 'first_start':
             query = base_query + "SELECT MIN(eff_start) FROM intersected WHERE eff_start < eff_end"
-            self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_time, start_time))
+            self.env.cr.execute(query, (now_utc, wc_id, min_doc_date, end_utc, start_utc))
             res = self.env.cr.fetchone()
             return res[0] if res else False
 
-    def _get_planned_working_intervals(self, start_time, end_time, workcenter):
+    def _get_planned_working_intervals(self, start_utc, end_utc, workcenter):
         if not workcenter:
-            return [(start_time, end_time)], (end_time - start_time).total_seconds()
+            return [(start_utc, end_utc)], (end_utc - start_utc).total_seconds()
 
         now_utc = fields.Datetime.now()
-        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
-        
-        now_mac = pytz.utc.localize(now_utc).astimezone(mac_tz).replace(tzinfo=None)
-        s_utc = mac_tz.localize(start_time, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
-        calc_end_time = min(now_mac, end_time)
-        e_utc = mac_tz.localize(calc_end_time, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        calc_end_utc = min(now_utc, end_utc)
 
-        if start_time >= calc_end_time:
+        if start_utc >= calc_end_utc:
             return [], 0.0
 
         downtimes = self.env['mes.flat.downtime'].search([
             ('machine_id', '=', workcenter.id),
-            ('start_time', '<', e_utc),
-            ('end_time', '>', s_utc)
+            ('start_time', '<', calc_end_utc),
+            ('end_time', '>', start_utc)
         ])
 
         intervals = []
         for dt in downtimes:
-            dt_s_loc = pytz.utc.localize(dt.start_time).astimezone(mac_tz).replace(tzinfo=None)
-            dt_e_loc = pytz.utc.localize(dt.end_time).astimezone(mac_tz).replace(tzinfo=None)
-            
-            dt_s = max(dt_s_loc, start_time)
-            dt_e = min(dt_e_loc, calc_end_time)
+            dt_s = max(dt.start_time, start_utc)
+            dt_e = min(dt.end_time, calc_end_utc)
             if dt_s < dt_e:
                 intervals.append([dt_s, dt_e])
 
@@ -197,35 +182,35 @@ class MesMachineSettings(models.Model):
             intervals = merged
 
         active_intervals = []
-        current_time = start_time
+        current_time = start_utc
         for dt in intervals:
             if current_time < dt[0]:
                 active_intervals.append((current_time, dt[0]))
             current_time = max(current_time, dt[1])
 
-        if current_time < calc_end_time:
-            active_intervals.append((current_time, calc_end_time))
+        if current_time < calc_end_utc:
+            active_intervals.append((current_time, calc_end_utc))
 
         total_sec = sum((i[1] - i[0]).total_seconds() for i in active_intervals)
         return active_intervals, total_sec
-    
-
 
     def _fetch_waste_stats_raw(self, cursor, start_time, end_time):
+        s_str = start_time.strftime('%Y-%m-%d %H:%M:%S.%f')
+        e_str = end_time.strftime('%Y-%m-%d %H:%M:%S.%f')
         cursor.execute("""
-            SELECT tag_name, COALESCE(SUM(value), 0), COALESCE(MAX(value) - MIN(value), 0)
+            SELECT tag_name, 
+                   COALESCE(SUM(value), 0) as sum_val, 
+                   COALESCE(MAX(value) - MIN(value), 0) as cum_val
             FROM telemetry_count 
             WHERE machine_name = %s AND time >= %s AND time < %s
             GROUP BY tag_name
-        """, (self.name, start_time, end_time))
+        """, (self.name, s_str, e_str))
         return {row[0]: {'sum': float(row[1]), 'cum': float(row[2])} for row in cursor.fetchall()}
 
-    def _fetch_timeline_raw(self, start_time, end_time, wc_id):
+
+    def _fetch_timeline_raw(self, start_utc, end_utc, wc_id):
         wc = self.env['mrp.workcenter'].browse(wc_id)
         mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
-        
-        s_utc = mac_tz.localize(start_time, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
-        e_utc = mac_tz.localize(end_time, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
         
         def _fmt(dt_utc):
             if not dt_utc: return ''
@@ -234,12 +219,11 @@ class MesMachineSettings(models.Model):
 
         perfs = self.env['mes.machine.performance'].search([
             ('machine_id', '=', wc_id), 
-            ('date', '>=', start_time.date() - timedelta(days=1)), 
-            ('date', '<=', end_time.date() + timedelta(days=1))
+            ('date', '>=', start_utc.date() - timedelta(days=2)), 
+            ('date', '<=', end_utc.date() + timedelta(days=2))
         ])
         
         if not perfs: return []
-
         now_utc = fields.Datetime.now()
         res = []
 
@@ -251,8 +235,8 @@ class MesMachineSettings(models.Model):
 
         for model, default_name, default_color, status in mapping:
             logs = self.env[model].search([
-                ('performance_id', 'in', perfs.ids), ('start_time', '<', e_utc), 
-                '|', ('end_time', '>', s_utc), ('end_time', '=', False)
+                ('performance_id', 'in', perfs.ids), ('start_time', '<', end_utc), 
+                '|', ('end_time', '>', start_utc), ('end_time', '=', False)
             ])
             for log in logs:
                 end_t = log.end_time or now_utc
@@ -266,25 +250,26 @@ class MesMachineSettings(models.Model):
 
     def _fetch_production_chart_raw(self, cursor, tag_names, start_time, end_time, bucket_min):
         if not tag_names: return []
+        s_str = start_time.strftime('%Y-%m-%d %H:%M:%S.%f')
+        e_str = end_time.strftime('%Y-%m-%d %H:%M:%S.%f')
         cursor.execute(f"""
             SELECT tag_name, time_bucket('{bucket_min} minutes', time) AS bucket,
-                   COALESCE(SUM(value), 0), COALESCE(MAX(value) - MIN(value), 0)
+                   COALESCE(SUM(value), 0) as sum_val,
+                   COALESCE(MAX(value) - MIN(value), 0) as cum_val
             FROM telemetry_count
             WHERE machine_name = %s AND tag_name = ANY(%s) AND time >= %s AND time < %s
             GROUP BY tag_name, bucket ORDER BY bucket
-        """, (self.name, tag_names, start_time, end_time))
+        """, (self.name, tag_names, s_str, e_str))
         return cursor.fetchall()
 
     def _calculate_kpi(self, total_running_sec, total_produced, total_planned_sec, wc):
         run_sec = max(0.0, total_running_sec)
         h, m, s = int(run_sec // 3600), int((run_sec % 3600) // 60), int(run_sec % 60)
-        
         ideal_rate = (wc.ideal_capacity_per_min / 60.0) if (wc and wc.ideal_capacity_per_min > 0) else 1.0 
             
         avail = max(0.0, min(run_sec / total_planned_sec if total_planned_sec > 0 else 0, 1.0))
         perf = max(0.0, min(total_produced / (run_sec * ideal_rate) if run_sec > 0 else 0, 1.0))
         oee = avail * perf
-
         waste = max(0.0, 1 - (total_produced / (run_sec * ideal_rate))) if (total_planned_sec > 0 and run_sec > 0) else 0.0
 
         return {
@@ -298,25 +283,89 @@ class MesMachineSettings(models.Model):
             'runtime_formatted': f"{h:02d}:{m:02d}:{s:02d}",
         }
 
+    def _calculate_kpi_for_window(self, workcenter, start_utc, end_utc):
+        if not workcenter: return None
+        machine = workcenter.machine_settings_id
+
+        active_intervals, total_planned_sec = self._get_planned_working_intervals(start_utc, end_utc, workcenter)
+        if total_planned_sec <= 0: return None
+
+        total_running_sec = self._fetch_interval_stats(active_intervals, workcenter.id, mode='runtime')
+        
+        total_produced = 0.0
+        docs = self.env['mes.machine.performance'].search([
+            ('machine_id', '=', workcenter.id),
+            ('state', '=', 'done')
+        ])
+        
+        valid_docs = docs.filtered(
+            lambda d: d._get_utc_time(d._get_local_shift_times()[0]) <= start_utc and 
+                      d._get_utc_time(d._get_local_shift_times()[1]) >= end_utc
+        )
+
+        if valid_docs:
+            prods = valid_docs.production_ids.filtered(lambda p: p.reason_id == workcenter.production_count_id)
+            total_produced = sum(prods.mapped('qty'))
+        else:
+            count_tag, is_cumul = workcenter.production_count_id.get_count_config_for_machine(machine) if workcenter.production_count_id else (None, False)
+            if count_tag:
+                mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
+                s_loc = pytz.utc.localize(start_utc).astimezone(mac_tz).replace(tzinfo=None)
+                e_loc = pytz.utc.localize(end_utc).astimezone(mac_tz).replace(tzinfo=None)
+                
+                with self.env['mes.timescale.base']._connection() as conn:
+                    with conn.cursor() as cur:
+                        if is_cumul:
+                            cur.execute("SELECT COALESCE(MAX(value) - MIN(value), 0) FROM telemetry_count WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s", 
+                                        (self.name, count_tag, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f'), e_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                        else:
+                            cur.execute("SELECT COALESCE(SUM(value), 0) FROM telemetry_count WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s", 
+                                        (self.name, count_tag, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f'), e_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                        res = cur.fetchone()
+                        if res and res[0]:
+                            total_produced = float(res[0])
+                
+        kpi = self._calculate_kpi(total_running_sec, total_produced, total_planned_sec, workcenter)
+        kpi['produced'] = total_produced
+        kpi['first_running_time'] = self._fetch_interval_stats(active_intervals, workcenter.id, mode='first_start')
+        return kpi
+
+    def action_open_waste_losses(self):
+        self.ensure_one()
+        self.env['mes.waste.loss.stat'].search([('machine_id', '=', self.id), ('create_uid', '=', self.env.uid)]).unlink()
+        self.env['mes.waste.loss.stat']._generate_stats(self.id)
+        return {
+            'name': 'Waste Losses Details', 'type': 'ir.actions.act_window', 'res_model': 'mes.waste.loss.stat',
+            'view_mode': 'tree', 'domain': [('machine_id', '=', self.id), ('create_uid', '=', self.env.uid)],
+            'context': {'default_machine_id': self.id}, 'target': 'new',
+        }
+
+    def action_open_downtime_losses(self):
+        self.ensure_one()
+        self.env['mes.downtime.loss.stat'].search([('machine_id', '=', self.id), ('create_uid', '=', self.env.uid)]).unlink()
+        self.env['mes.downtime.loss.stat']._generate_stats(self.id)
+        return {
+            'name': 'Downtime Losses Details', 'type': 'ir.actions.act_window', 'res_model': 'mes.downtime.loss.stat',
+            'view_mode': 'tree', 'domain': [('machine_id', '=', self.id), ('create_uid', '=', self.env.uid)],
+            'context': {'default_machine_id': self.id}, 'target': 'new',
+        }
 
     @api.model
     def get_realtime_oee_batch(self, wcs):
         if not wcs: return {}
         res, cfgs = {}, {}
-
         now_utc = fields.Datetime.now()
+        
         for wc in wcs:
             mac = wc.machine_settings_id
             if not mac: continue
 
-            s_time, e_time = self.env['mes.shift'].get_current_shift_window(wc)
-            if not s_time or not e_time:
+            s_utc, e_utc = self.env['mes.shift'].get_current_shift_window(wc)
+            if not s_utc or not e_utc:
                 res[wc.id] = {'error': 'No active shift'}
                 continue
                 
-            mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
-            calc_e_time = min(pytz.utc.localize(now_utc).astimezone(mac_tz).replace(tzinfo=None), e_time)
-
+            calc_e_utc = min(now_utc, e_utc)
             state_tag, _ = wc.runtime_event_id.get_mapping_for_machine(mac) if wc.runtime_event_id else (None, None)
             count_tag, is_cumul = wc.production_count_id.get_count_config_for_machine(mac) if wc.production_count_id else (None, False)
 
@@ -324,12 +373,16 @@ class MesMachineSettings(models.Model):
                 res[wc.id] = {'error': 'Config Error'}
                 continue
 
-            act_ints, plan_sec = mac._get_planned_working_intervals(s_time, e_time, wc)
+            act_ints, plan_sec = mac._get_planned_working_intervals(s_utc, e_utc, wc)
+            
+            mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
+            s_loc = pytz.utc.localize(s_utc).astimezone(mac_tz).replace(tzinfo=None)
+            calc_e_loc = pytz.utc.localize(calc_e_utc).astimezone(mac_tz).replace(tzinfo=None)
 
             cfgs[wc.id] = {
                 'mac': mac, 'count_tag': count_tag, 'is_cumul': is_cumul,
                 'act_ints': act_ints, 'plan_sec': plan_sec, 'count_id': wc.production_count_id.id,
-                's_time': s_time, 'calc_e_time': calc_e_time
+                's_loc': s_loc, 'calc_e_loc': calc_e_loc
             }
 
         if not cfgs: return res
@@ -340,7 +393,7 @@ class MesMachineSettings(models.Model):
                 for wc_id, cfg in cfgs.items():
                     m_name = cfg['mac'].name
                     if m_name not in c_data:
-                        c_data[m_name] = cfg['mac']._fetch_waste_stats_raw(cur, cfg['s_time'], cfg['calc_e_time'])
+                        c_data[m_name] = cfg['mac']._fetch_waste_stats_raw(cur, cfg['s_loc'], cfg['calc_e_loc'])
 
         all_rej = self.env['mes.counts'].search([])
 
@@ -368,89 +421,22 @@ class MesMachineSettings(models.Model):
                 'top_rejection': f"{top_rej_name} ({int(top_rej_cnt)})" if top_rej_cnt > 0 else "None"
             })
             res[wc_id] = kpi
-
         return res
-
-    def _calculate_kpi_for_window(self, workcenter, start_time, end_time):
-        if not workcenter:
-            return None
-
-        active_intervals, plan_sec = self._get_planned_working_intervals(start_time, end_time, workcenter)
-        if plan_sec <= 0:
-            return None
-
-        run_sec = self._fetch_interval_stats(active_intervals, workcenter.id, mode='runtime')
-        tot_prod = 0.0
-        
-        docs = self.env['mes.machine.performance'].search([
-            ('machine_id', '=', workcenter.id),
-            ('state', '=', 'done')
-        ])
-        
-        valid_docs = docs.filtered(
-            lambda d: d._get_utc_time(d._get_local_shift_times()[0]) <= start_time and 
-                      d._get_utc_time(d._get_local_shift_times()[1]) >= end_time
-        )
-
-        if valid_docs:
-            prods = valid_docs.production_ids.filtered(lambda p: p.reason_id == workcenter.production_count_id)
-            tot_prod = sum(prods.mapped('qty'))
-        else:
-            count_tag, is_cumul = workcenter.production_count_id.get_count_config_for_machine(self) if workcenter.production_count_id else (None, False)
-            if count_tag:
-                with self.env['mes.timescale.base']._connection() as conn:
-                    with conn.cursor() as cur:
-                        if is_cumul:
-                            cur.execute("""
-                                SELECT COALESCE(MAX(value) - MIN(value), 0) 
-                                FROM telemetry_count 
-                                WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s
-                            """, (self.name, count_tag, start_time, end_time))
-                        else:
-                            cur.execute("""
-                                SELECT COALESCE(SUM(value), 0) 
-                                FROM telemetry_count 
-                                WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s
-                            """, (self.name, count_tag, start_time, end_time))
-                        
-                        res = cur.fetchone()
-                        if res and res[0]:
-                            tot_prod = float(res[0])
-                
-        kpi = self._calculate_kpi(run_sec, tot_prod, plan_sec, workcenter)
-        kpi['produced'] = tot_prod
-        kpi['first_running_time'] = self._fetch_interval_stats(active_intervals, workcenter.id, mode='first_start')
-        
-        return kpi
 
     def action_import_machine_counts(self):
         self.ensure_one()
         return {
-            'name': 'Import Machine Counts',
-            'type': 'ir.actions.act_window',
-            'res_model': 'mes.dictionary.import.wizard',
-            'view_mode': 'form',
-            'target': 'new',
-            'context': {
-                'default_import_mode': 'machine',
-                'default_import_type': 'count',
-                'default_machine_id': self.id,
-            }
+            'name': 'Import Machine Counts', 'type': 'ir.actions.act_window', 'res_model': 'mes.dictionary.import.wizard',
+            'view_mode': 'form', 'target': 'new',
+            'context': {'default_import_mode': 'machine', 'default_import_type': 'count', 'default_machine_id': self.id}
         }
 
     def action_import_machine_events(self):
         self.ensure_one()
         return {
-            'name': 'Import Machine Events/Alarms',
-            'type': 'ir.actions.act_window',
-            'res_model': 'mes.dictionary.import.wizard',
-            'view_mode': 'form',
-            'target': 'new',
-            'context': {
-                'default_import_mode': 'machine',
-                'default_import_type': 'event',
-                'default_machine_id': self.id,
-            }
+            'name': 'Import Machine Events/Alarms', 'type': 'ir.actions.act_window', 'res_model': 'mes.dictionary.import.wizard',
+            'view_mode': 'form', 'target': 'new',
+            'context': {'default_import_mode': 'machine', 'default_import_type': 'event', 'default_machine_id': self.id}
         }
 
 
@@ -474,8 +460,7 @@ class MesSignalBase(models.AbstractModel):
 
     def write(self, vals):
         res = super().write(vals)
-        for rec in self:
-            self._sync(rec)
+        for rec in self: self._sync(rec)
         return res
 
     def _sync(self, rec):
@@ -492,7 +477,6 @@ class MesSignalCount(models.Model):
     machine_id = fields.Many2one('mes.machine.settings', string='Machine', required=True, ondelete='cascade')
     count_id = fields.Many2one('mes.counts', string='Dictionary Count', required=True)
     is_cumulative = fields.Boolean(string='Cumulative (MAX-MIN)', default=False)
-
     _sql_constraints = [('tag_count_uniq', 'unique(machine_id, tag_name, count_id)', 'Mapping exists!')]
 
     def unlink(self):
@@ -513,7 +497,6 @@ class MesSignalEvent(models.Model):
     machine_id = fields.Many2one('mes.machine.settings', string='Machine', required=True, ondelete='cascade')
     event_id = fields.Many2one('mes.event', string='Dictionary Event', required=True)
     plc_value = fields.Integer(string='PLC Value', required=True)
-
     _sql_constraints = [('tag_val_event_uniq', 'unique(machine_id, tag_name, plc_value, event_id)', 'Mapping exists!')]
 
     def unlink(self):
@@ -530,7 +513,6 @@ class MesSignalProcess(models.Model):
 
     machine_id = fields.Many2one('mes.machine.settings', string='Machine', required=True, ondelete='cascade')
     process_id = fields.Many2one('mes.process', string='Dictionary Process', required=True)
-
     _sql_constraints = [('tag_process_uniq', 'unique(machine_id, tag_name, process_id)', 'Mapping exists!')]
 
     def unlink(self):
@@ -552,19 +534,23 @@ class MesWasteLossStat(models.TransientModel):
         workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
         if not workcenter: return
         
-        start_time, shift_end = self.env['mes.shift'].get_current_shift_window(workcenter)
-        if not start_time: return
+        start_utc, shift_end_utc = self.env['mes.shift'].get_current_shift_window(workcenter)
+        if not start_utc: return
         
-        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
-        calc_end_time = min(pytz.utc.localize(fields.Datetime.now()).astimezone(mac_tz).replace(tzinfo=None), shift_end)
+        now_utc = fields.Datetime.now()
+        calc_end_utc = min(now_utc, shift_end_utc)
         
-        active_ints, _ = machine._get_planned_working_intervals(start_time, shift_end, workcenter)
+        active_ints, _ = machine._get_planned_working_intervals(start_utc, shift_end_utc, workcenter)
         total_run_sec = machine._fetch_interval_stats(active_ints, workcenter.id, mode='runtime')
         hours_run = (total_run_sec / 3600.0) if total_run_sec > 0 else 0.0
 
+        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
+        s_loc = pytz.utc.localize(start_utc).astimezone(mac_tz).replace(tzinfo=None)
+        e_loc = pytz.utc.localize(calc_end_utc).astimezone(mac_tz).replace(tzinfo=None)
+
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
-                raw_counts = machine._fetch_waste_stats_raw(cur, start_time, calc_end_time)
+                raw_counts = machine._fetch_waste_stats_raw(cur, s_loc, e_loc)
 
         vals = []
         for c_def in machine.count_tag_ids:
@@ -575,10 +561,8 @@ class MesWasteLossStat(models.TransientModel):
             
             if val > 0:
                 vals.append({
-                    'machine_id': machine.id,
-                    'name': c_def.count_id.name if c_def.count_id else c_def.tag_name,
-                    'waste_sum': val,
-                    'waste_per_hour': (val / hours_run) if hours_run > 0 else 0.0
+                    'machine_id': machine.id, 'name': c_def.count_id.name if c_def.count_id else c_def.tag_name,
+                    'waste_sum': val, 'waste_per_hour': (val / hours_run) if hours_run > 0 else 0.0
                 })
         if vals: self.with_context(skip_generation=True).create(vals)
 
@@ -599,10 +583,10 @@ class MesDowntimeLossStat(models.TransientModel):
         workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
         if not workcenter: return
         
-        start_time, shift_end = self.env['mes.shift'].get_current_shift_window(workcenter)
-        if not start_time: return
+        start_utc, shift_end_utc = self.env['mes.shift'].get_current_shift_window(workcenter)
+        if not start_utc: return
         
-        active_ints, _ = machine._get_planned_working_intervals(start_time, shift_end, workcenter)
+        active_ints, _ = machine._get_planned_working_intervals(start_utc, shift_end_utc, workcenter)
         total_run_sec = machine._fetch_interval_stats(active_ints, workcenter.id, mode='runtime')
         hours_run = (total_run_sec / 3600.0) if total_run_sec > 0 else 0.0
         

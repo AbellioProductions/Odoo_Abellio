@@ -106,15 +106,13 @@ class MesMachinePerformance(models.Model):
         for row in rows:
             ts_raw, tag, val = row
             
+            # STRIP FAKE UTC TZINFO FROM PSYCOPG2
             if isinstance(ts_raw, str):
                 evt_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
             else:
-                evt_dt = ts_raw
+                evt_dt = ts_raw.replace(tzinfo=None)
                 
-            if evt_dt.tzinfo:
-                evt_utc = evt_dt.astimezone(pytz.utc).replace(tzinfo=None)
-            else:
-                evt_utc = local_tz.localize(evt_dt, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+            evt_utc = local_tz.localize(evt_dt).astimezone(pytz.utc).replace(tzinfo=None)
             
             if active_state and evt_utc <= active_state.start_time:
                 continue
@@ -247,7 +245,7 @@ class MesMachinePerformance(models.Model):
         self.ensure_one()
         tz_name = self.company_id.tz or 'UTC'
         mac_tz = pytz.timezone(tz_name)
-        local_dt = mac_tz.localize(local_naive_dt, is_dst=False)
+        local_dt = mac_tz.localize(local_naive_dt.replace(tzinfo=None))
         return local_dt.astimezone(pytz.utc).replace(tzinfo=None)
 
 class MesPerformanceAlarm(models.Model):
