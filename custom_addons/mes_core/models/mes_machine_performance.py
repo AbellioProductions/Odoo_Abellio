@@ -71,9 +71,25 @@ class MesMachinePerformance(models.Model):
                 orphan.write({'end_time': active_state.start_time})
 
         last_utc_ts = active_state.start_time if active_state else (fields.Datetime.now() - timedelta(days=1))
-        last_local_ts = self._utc_to_local(last_utc_ts, wc)
+        
+        tz_name = wc.company_id.tz or 'UTC'
+        local_tz = pytz.timezone(tz_name)
+        last_local_ts = pytz.utc.localize(last_utc_ts).astimezone(local_tz).replace(tzinfo=None)
         
         mac = wc.machine_settings_id
+        
+        last_reason_val = 0
+        if wc.telemetry_state_logic == 'states':
+            with self.env['mes.timescale.base']._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT value FROM telemetry_event 
+                        WHERE machine_name = %s AND tag_name = 'OEE.nStopRootReason' AND time <= %s
+                        ORDER BY time DESC LIMIT 1
+                    """, (mac.name, last_local_ts.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                    res = cur.fetchone()
+                    if res: last_reason_val = res[0]
+
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -90,13 +106,40 @@ class MesMachinePerformance(models.Model):
         for row in rows:
             ts_raw, tag, val = row
             
-            # Строгая конвертация с отсечением ложного UTC от psycopg2
-            evt_utc = self._local_to_utc(ts_raw, wc)
+            if isinstance(ts_raw, str):
+                evt_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
+            else:
+                evt_dt = ts_raw
+                
+            if evt_dt.tzinfo:
+                evt_utc = evt_dt.astimezone(pytz.utc).replace(tzinfo=None)
+            else:
+                evt_utc = local_tz.localize(evt_dt, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
             
             if active_state and evt_utc <= active_state.start_time:
                 continue
 
-            tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
+            if wc.telemetry_state_logic == 'states':
+                if tag == 'OEE.nStopRootReason':
+                    last_reason_val = val
+                    if active_state and active_state._name == 'mes.performance.alarm':
+                        evt = self._resolve_event(mac, tag, int(val) if val is not None else 0)
+                        if evt: active_state.write({'loss_id': evt.id})
+                    continue
+                
+                if tag != 'OEE.nMachineState':
+                    continue
+                    
+                plc_val = int(val) if val is not None else 0
+                if plc_val == 1:
+                    tgt_model = 'mes.performance.alarm'
+                    evt = self._resolve_event(mac, 'OEE.nStopRootReason', int(last_reason_val) if last_reason_val is not None else 0)
+                    evt_id = evt.id if evt else None
+                else:
+                    tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
+            else:
+                tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
+
             if not tgt_model or not evt_id:
                 continue
 
@@ -164,9 +207,10 @@ class MesMachinePerformance(models.Model):
         })
 
     def _get_or_create_doc(self, wc, ts_utc):
-        ts_loc = self._utc_to_local(ts_utc, wc)
-        curr_h = ts_loc.hour + ts_loc.minute / 60.0 + ts_loc.second / 3600.0
+        mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
+        ts_loc = pytz.utc.localize(ts_utc).astimezone(mac_tz).replace(tzinfo=None)
         
+        curr_h = ts_loc.hour + ts_loc.minute / 60.0 + ts_loc.second / 3600.0
         shifts = self.env['mes.shift'].search([('company_id', '=', wc.company_id.id)])
         val_s = [s for s in shifts if not (s.workcenter_ids and wc.id not in s.workcenter_ids.ids)]
         
@@ -190,28 +234,6 @@ class MesMachinePerformance(models.Model):
             doc = self.create({'machine_id': wc.id, 'shift_id': cur_s.id, 'date': st_d})
         return doc
 
-    def _local_to_utc(self, local_val, wc):
-        """Жесткое отсечение ложных часовых поясов и конвертация в UTC"""
-        if not local_val: return False
-        if isinstance(local_val, str):
-            dt_naive = fields.Datetime.to_datetime(local_val.replace('T', ' ').replace('Z', '')[:19])
-        else:
-            dt_naive = local_val.replace(tzinfo=None)
-            
-        tz = pytz.timezone(wc.company_id.tz or 'UTC')
-        return tz.localize(dt_naive, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
-
-    def _utc_to_local(self, utc_val, wc):
-        """Жесткая конвертация из UTC сервера в локальное время машины"""
-        if not utc_val: return False
-        if isinstance(utc_val, str):
-            dt_naive = fields.Datetime.to_datetime(utc_val.replace('T', ' ').replace('Z', '')[:19])
-        else:
-            dt_naive = utc_val.replace(tzinfo=None)
-            
-        tz = pytz.timezone(wc.company_id.tz or 'UTC')
-        return pytz.utc.localize(dt_naive).astimezone(tz).replace(tzinfo=None)
-
     def _get_local_shift_times(self):
         self.ensure_one()
         s_time = datetime.combine(
@@ -223,8 +245,10 @@ class MesMachinePerformance(models.Model):
 
     def _get_utc_time(self, local_naive_dt):
         self.ensure_one()
-        return self._local_to_utc(local_naive_dt, self.machine_id)
-
+        tz_name = self.company_id.tz or 'UTC'
+        mac_tz = pytz.timezone(tz_name)
+        local_dt = mac_tz.localize(local_naive_dt, is_dst=False)
+        return local_dt.astimezone(pytz.utc).replace(tzinfo=None)
 
 class MesPerformanceAlarm(models.Model):
     _name = 'mes.performance.alarm'

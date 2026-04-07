@@ -419,6 +419,8 @@
                             <field name="ideal_capacity_per_min"/>
                             <field name="refresh_frequency" widget="auto_refresh"/>
                             <field name="chart_bucket_minutes"/> 
+                            
+                            <field name="telemetry_state_logic" widget="radio"/>
                         </group>
                         <group string="Security">
                             <field name="allowed_pc_ips" placeholder="192.168.0.1"/>

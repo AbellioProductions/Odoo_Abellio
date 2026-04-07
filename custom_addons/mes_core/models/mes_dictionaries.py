@@ -313,6 +313,11 @@ class MesWorkcenter(models.Model):
         store=False
     )
 
+    telemetry_state_logic = fields.Selection([
+        ('events', 'Through Events'),
+        ('states', 'By State Flags')
+    ], string='Telemetry FSM Logic', default='events', required=True)
+
     @api.depends('current_first_running_time')
     def _compute_current_first_running_time_disp(self):
         for rec in self:

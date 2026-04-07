@@ -21,8 +21,6 @@ class MesHistPerformanceWiz(models.TransientModel):
         uid = self.env.uid
         context = self.env.context.copy()
         
-        _logger.info("WIZARD_INIT: Starting thread for %s machines", len(self.machine_ids))
-        
         thread = threading.Thread(
             target=self._run_in_background,
             args=(db_name, uid, context, self.start_date, self.end_date, self.machine_ids.ids)
@@ -74,27 +72,20 @@ class MesHistPerformanceWiz(models.TransientModel):
                         curr_t += timedelta(days=1)
                         
                 queue.sort(key=lambda x: x['s_utc'])
-                
-                _logger.info("WIZARD_QUEUE: Built queue with %s shift windows to process", len(queue))
 
                 for item in queue:
                     self._process_single_shift_fsm(env, item, now_utc)
                     cr.commit() 
                     env.clear()  
                     
-                _logger.info("WIZARD_COMPLETE: All items processed successfully")
-                    
             except Exception as e:
                 cr.rollback()
-                error_msg = f"WIZARD_FAULT: Critical failure in background thread!\nError: {str(e)}\n{traceback.format_exc()}"
-                _logger.error(error_msg)
+                _logger.error("WIZARD_FAULT: Critical failure in background thread!\nError: %s\n%s", str(e), traceback.format_exc())
 
     @api.model
     def _process_single_shift_fsm(self, env, item, now_utc):
         wc = env['mrp.workcenter'].browse(item['wc_id'])
         shift = env['mes.shift'].browse(item['shift_id'])
-        
-        _logger.info("WIZARD_DOC_START: WC=%s | Shift=%s | Date=%s", wc.name, shift.name, item['tgt_date'])
         
         s_utc, e_utc = item['s_utc'], item['e_utc']
         s_loc, e_loc = item['s_loc'], item['e_loc']
@@ -104,19 +95,34 @@ class MesHistPerformanceWiz(models.TransientModel):
         calc_e_loc = self._get_local(wc, calc_e_utc)
 
         doc = self._prepare_doc(env, wc, shift, item['tgt_date'])
-        _logger.info("WIZARD_DOC_PREP: Doc ID=%s created/found", doc.id)
-
         perf_model = env['mes.machine.performance']
         mac = wc.machine_settings_id
 
+        last_reason_val = 0
         with env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT time, tag_name, value 
-                    FROM telemetry_event 
-                    WHERE machine_name = %s AND time <= %s 
-                    ORDER BY time DESC LIMIT 1
-                """, (mac.name, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                if wc.telemetry_state_logic == 'states':
+                    cur.execute("""
+                        SELECT value FROM telemetry_event 
+                        WHERE machine_name = %s AND tag_name = 'OEE.nStopRootReason' AND time <= %s 
+                        ORDER BY time DESC LIMIT 1
+                    """, (mac.name, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                    res = cur.fetchone()
+                    if res: last_reason_val = res[0]
+
+                    cur.execute("""
+                        SELECT time, tag_name, value 
+                        FROM telemetry_event 
+                        WHERE machine_name = %s AND tag_name = 'OEE.nMachineState' AND time <= %s 
+                        ORDER BY time DESC LIMIT 1
+                    """, (mac.name, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                else:
+                    cur.execute("""
+                        SELECT time, tag_name, value 
+                        FROM telemetry_event 
+                        WHERE machine_name = %s AND time <= %s 
+                        ORDER BY time DESC LIMIT 1
+                    """, (mac.name, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
                 baseline = cur.fetchone()
 
                 cur.execute("""
@@ -127,13 +133,21 @@ class MesHistPerformanceWiz(models.TransientModel):
                 """, (mac.name, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f'), calc_e_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
                 events = cur.fetchall()
 
-        _logger.info("WIZARD_FETCH: Found %s events for window %s -> %s", len(events), s_loc, calc_e_loc)
-
         active_state = None
 
         if baseline:
             _, tag, val = baseline
-            tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
+            if wc.telemetry_state_logic == 'states':
+                plc_val = int(val) if val is not None else 0
+                if plc_val == 1:
+                    tgt_model = 'mes.performance.alarm'
+                    evt = perf_model._resolve_event(mac, 'OEE.nStopRootReason', int(last_reason_val) if last_reason_val is not None else 0)
+                    evt_id = evt.id if evt else None
+                else:
+                    tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
+            else:
+                tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
+                
             if tgt_model and evt_id:
                 active_state = env[tgt_model].create({
                     'performance_id': doc.id,
@@ -141,16 +155,39 @@ class MesHistPerformanceWiz(models.TransientModel):
                     'start_time': s_utc
                 })
 
-        valid_events = 0
         for row in events:
             ts_raw, tag, val = row
-            evt_utc = self._get_utc(wc, ts_raw)
+            
+            if isinstance(ts_raw, str):
+                ts_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
+            else:
+                ts_dt = ts_raw
+                
+            evt_utc = self._get_utc(wc, ts_dt)
 
-            tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
+            if wc.telemetry_state_logic == 'states':
+                if tag == 'OEE.nStopRootReason':
+                    last_reason_val = val
+                    if active_state and active_state._name == 'mes.performance.alarm':
+                        evt = perf_model._resolve_event(mac, tag, int(val) if val is not None else 0)
+                        if evt: active_state.write({'loss_id': evt.id})
+                    continue
+                
+                if tag != 'OEE.nMachineState':
+                    continue
+                    
+                plc_val = int(val) if val is not None else 0
+                if plc_val == 1:
+                    tgt_model = 'mes.performance.alarm'
+                    evt = perf_model._resolve_event(mac, 'OEE.nStopRootReason', int(last_reason_val) if last_reason_val is not None else 0)
+                    evt_id = evt.id if evt else None
+                else:
+                    tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
+            else:
+                tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
+
             if not tgt_model or not evt_id:
                 continue
-
-            valid_events += 1
 
             if active_state and active_state._name == tgt_model and active_state.loss_id.id == evt_id:
                 continue
@@ -164,17 +201,16 @@ class MesHistPerformanceWiz(models.TransientModel):
                 'start_time': evt_utc
             })
 
-        _logger.info("WIZARD_FSM: Processed %s valid state transitions", valid_events)
-
         if not is_cur:
             if active_state:
                 active_state.write({'end_time': calc_e_utc})
             
             self._process_shift_counts(env, doc, wc, s_loc, e_loc)
 
-            # ВРЕМЕННО ОТКЛЮЧАЕМ УДАЛЕНИЕ ПУСТЫХ ДОКУМЕНТОВ ДЛЯ ДЕБАГА
-            doc.write({'state': 'done'})
-            _logger.info("WIZARD_SAVE: Doc %s locked successfully (Unlink disabled)", doc.id)
+            if self._is_empty_doc(doc):
+                doc.unlink()
+            else:
+                doc.write({'state': 'done'})
 
     def _process_shift_counts(self, env, doc, wc, s_loc, e_loc):
         mac = wc.machine_settings_id
