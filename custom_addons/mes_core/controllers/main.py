@@ -1,7 +1,7 @@
 from datetime import datetime
 import logging
 import psycopg2.extras
-from odoo import http, fields
+from odoo import http
 from odoo.http import request
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,6 @@ class MesTelemetryApi(http.Controller):
         prcs = self._parse_batch(processes)
         
         db = request.env['mes.timescale.base']
-        perf_model = request.env['mes.machine.performance'].sudo()
         
         try:
             with db._connection() as conn:
@@ -55,13 +54,6 @@ class MesTelemetryApi(http.Controller):
                         """
                         psycopg2.extras.execute_values(cur, q_evt, evts, page_size=10000)
 
-                        for evt in evts:
-                            ts_raw, _, mac_name, tag_name, val, _ = evt
-                            ts_str = ts_raw.replace('T', ' ').replace('Z', '')[:19] if isinstance(ts_raw, str) else ts_raw
-                            ts_utc = fields.Datetime.to_datetime(ts_str)
-                            plc_val = int(val) if val is not None else 0
-                            perf_model.register_chain_event(mac_name, tag_name, plc_val, ts_utc)
-                            
                     if cnts:
                         q_cnt = """
                             INSERT INTO telemetry_count (time, arrived_time, machine_name, tag_name, value, evt_id) 

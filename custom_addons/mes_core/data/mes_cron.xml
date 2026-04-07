@@ -48,5 +48,18 @@
             <field name="numbercall">-1</field>
             <field name="active" eval="True"/>
         </record>
+
+        <record id="ir_cron_mes_process_pending_events" model="ir.cron">
+            <field name="name">MES: Process Pending Telemetry Events</field>
+            <field name="model_id" ref="model_mes_machine_performance"/>
+            <field name="state">code</field>
+            <field name="code">model.cron_process_pending_events()</field>
+            <field name="user_id" ref="base.user_root"/>
+            <field name="interval_number">1</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="doall" eval="False"/>
+            <field name="active" eval="True"/>
+        </record>
     </data>
 </odoo>
