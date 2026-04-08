@@ -322,7 +322,11 @@ class MesWorkcenter(models.Model):
     def _compute_current_first_running_time_disp(self):
         for rec in self:
             if rec.current_first_running_time:
-                rec.current_first_running_time_disp = rec.current_first_running_time.strftime('%d.%m.%Y %H:%M:%S')
+                tz_name = rec.company_id.tz or 'UTC'
+                mac_tz = pytz.timezone(tz_name)
+                utc_dt = pytz.utc.localize(rec.current_first_running_time)
+                loc_dt = utc_dt.astimezone(mac_tz)
+                rec.current_first_running_time_disp = loc_dt.strftime('%d.%m.%Y %H:%M:%S')
             else:
                 rec.current_first_running_time_disp = False
 
@@ -431,7 +435,7 @@ class MesWorkcenter(models.Model):
                 raise ValidationError('Configuration error: Refresh frequency cannot be less than 10 seconds.')
 
     @api.model
-    def _build_chart_payload(self, wc, s_time, calc_e_time, b_min, count_id=False, proc_id=False):
+    def _build_chart_payload(self, wc, s_loc, calc_e_loc, s_utc, calc_e_utc, b_min, count_id=False, proc_id=False):
         mac = wc.machine_settings_id
 
         def to_iso(dt):
@@ -462,7 +466,7 @@ class MesWorkcenter(models.Model):
         p_to_fetch = tgt_p | tgt_p.related_process_ids
 
         b_sec = b_min * 60
-        tot_s = (calc_e_time - s_time).total_seconds()
+        tot_s = (calc_e_loc - s_loc).total_seconds()
         n_ints = math.ceil(tot_s / b_sec) if tot_s > 0 else 1
 
         labels = []
@@ -471,30 +475,22 @@ class MesWorkcenter(models.Model):
         b_idx_map = {}
         ideal_per_b = (wc.ideal_capacity_per_min or 0.0) * b_min
 
-        s_local_naive = s_time
         for i in range(n_ints + 1):
-            b_local_naive = s_local_naive + timedelta(seconds=i * b_sec)
-            iso = b_local_naive.strftime('%Y-%m-%dT%H:%M:%S')
-            labels.append(iso)
+            b_dt = s_loc + timedelta(seconds=i * b_sec)
+            labels.append(to_iso(b_dt))
             prod_data.append(0.0)
             ideal_data.append(ideal_per_b if i > 0 else 0.0)
-            key = b_local_naive.strftime('%Y-%m-%dT%H:%M')
-            b_idx_map[key] = i
+            b_idx_map[b_dt.strftime('%Y-%m-%dT%H:%M')] = i
 
-        tl_data = []
+        tl_data = mac._fetch_timeline_raw(s_utc, calc_e_utc, wc.id)
+        
         all_p_data = []
         main_p_data = []
-
-        tl_data = mac._fetch_timeline_raw(s_time, calc_e_time, wc.id)
-        
-        for entry in tl_data:
-            if entry.get('start'): entry['start'] = to_iso(entry['start'])
-            if entry.get('end'): entry['end'] = to_iso(entry['end'])
 
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
                 if c_tags:
-                    raw_prod = mac._fetch_production_chart_raw(cur, c_tags, s_time, calc_e_time, b_min)
+                    raw_prod = mac._fetch_production_chart_raw(cur, c_tags, s_loc, calc_e_loc, b_min)
                     for row in raw_prod:
                         t_name = row[0]
                         b_time = row[1].replace(tzinfo=None)
@@ -517,11 +513,11 @@ class MesWorkcenter(models.Model):
                             WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time <= %s
                             ORDER BY time ASC)
                         ) sub ORDER BY time ASC
-                    """, (mac.name, p_tag, s_time, mac.name, p_tag, s_time, calc_e_time))
+                    """, (mac.name, p_tag, s_loc, mac.name, p_tag, s_loc, calc_e_loc))
                     
                     p_series = []
                     for row in cur.fetchall():
-                        p_series.append({'x': to_iso(row[0]), 'y': float(row[1])})
+                        p_series.append({'x': to_iso(row[0].replace(tzinfo=None)), 'y': float(row[1])})
                     if tgt_p and p.id == tgt_p.id: main_p_data = p_series
                     all_p_data.append({'name': p.complete_name or p.name, 'data': p_series})
 
@@ -552,17 +548,22 @@ class MesWorkcenter(models.Model):
         if not wc.exists() or not wc.machine_settings_id:
             return {'error': 'Machine not configured'}
 
-        s_time, e_time = self.env['mes.shift'].get_current_shift_window(wc)
-        if not s_time: 
+        s_loc, e_loc = self.env['mes.shift'].get_current_shift_window(wc)
+        if not s_loc: 
             return {'error': 'No active shift'}
 
         now_utc = fields.Datetime.now()
         mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
-        now_mac = pytz.utc.localize(now_utc).astimezone(mac_tz).replace(tzinfo=None)
-        calc_e_time = min(now_mac, e_time)
+        
+        now_loc = pytz.utc.localize(now_utc).astimezone(mac_tz).replace(tzinfo=None)
+        calc_e_loc = min(now_loc, e_loc)
+        
+        s_utc = mac_tz.localize(s_loc, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        calc_e_utc = mac_tz.localize(calc_e_loc, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        
         b_min = max(1, wc.chart_bucket_minutes)
         
-        return self._build_chart_payload(wc, s_time, calc_e_time, b_min, selected_count_id, selected_process_id)
+        return self._build_chart_payload(wc, s_loc, calc_e_loc, s_utc, calc_e_utc, b_min, selected_count_id, selected_process_id)
 
     def _process_timeline_colors(self, machine, raw_timeline, state_configs):
         name_map = {}
