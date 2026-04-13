@@ -667,7 +667,7 @@ class MesHistDashboardWiz(models.TransientModel):
         e_time_wall = e_utc.astimezone(local_tz).replace(tzinfo=None)
 
         res = self.env['mrp.workcenter']._build_chart_payload(
-            wiz.wc_id, s_time_wall, e_time_wall, wiz.b_min, 
+            wiz.wc_id, wiz.s_time, s_time_wall, wiz.e_time, e_time_wall, wiz.b_min, 
             wiz.count_id.id if wiz.count_id else False, 
             wiz.proc_id.id if wiz.proc_id else False
         )

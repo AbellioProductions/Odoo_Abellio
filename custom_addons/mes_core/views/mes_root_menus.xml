@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="menu_mes_root" name="MES System" web_icon="mrp,static/description/icon.png"/>
+
+    <menuitem id="menu_mes_documents" name="Documents" parent="menu_mes_root" sequence="10"/>
+
+    <menuitem id="menu_mes_catalogues" name="Catalogues" parent="menu_mes_root" sequence="90" groups="mes_core.group_mes_manager"/>
+
+    <menuitem id="menu_mes_configuration" 
+              name="Configuration" 
+              parent="menu_mes_root" 
+              sequence="100" 
+              groups="mes_core.group_mes_manager"/>
+
+    <menuitem id="menu_mes_tools" 
+              name="Tools" 
+              parent="menu_mes_root" 
+              sequence="100" 
+              groups="mes_core.group_mes_manager"/>
+</odoo>

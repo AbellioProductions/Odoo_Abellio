@@ -95,16 +95,4 @@
         <field name="view_mode">tree,form</field>
     </record>
 
-    <menuitem id="menu_mes_supervisor_dashboard"
-              name="Supervisor Dashboard"
-              parent="mes_core.menu_mes_analytics"
-              action="action_mes_supervisor_dashboard"
-              sequence="30"/>
-
-    <menuitem id="menu_mes_machine_operations"
-              name="Machine Operations Logs"
-              parent="mes_core.menu_mes_documents"
-              action="action_mes_machine_operations"
-              sequence="50"/>
-
 </odoo>

@@ -17,7 +17,8 @@ BATCH_SIZE = 3000
 
 MS_SQL_CONN_STR = 'DRIVER={SQL Server};SERVER=AB-AS03;DATABASE=Connect;UID=Report;PWD=Report_1t'
 ODOO_URL = 'https://10.0.0.8:8443'
-ODOO_DB = 'Odoo'
+
+ODOO_DB = 'Abellio_Odoo' 
 ODOO_USER = 'admin'
 ODOO_PASS = 'admin'
 
@@ -98,6 +99,7 @@ def proc_events(ms_cur, http_sess, start_dt_str, end_dt_str):
     if not LOAD_EVENTS:
         return
         
+    print(f"-> Extracting Events: {start_dt_str} to {end_dt_str}...")
     ms_cur.execute("""
         SELECT e.StartTime, e.ArrivedTime, a.Code, e.Value
         FROM dbo.tblDATRawEventAuto e
@@ -106,6 +108,7 @@ def proc_events(ms_cur, http_sess, start_dt_str, end_dt_str):
         ORDER BY e.StartTime ASC
     """, (start_dt_str, end_dt_str))
     
+    total_sent = 0
     fetch_batches = iter(lambda: ms_cur.fetchmany(BATCH_SIZE), [])
     for i, rows in enumerate(fetch_batches, start=1):
         batch = []
@@ -123,13 +126,18 @@ def proc_events(ms_cur, http_sess, start_dt_str, end_dt_str):
             batch.append([ts_norm, arr_norm, mac_name, tag, final_val, evt_id])
             
         if batch:
+            print(f"   Sending batch {i} ({len(batch)} events)...")
             payload = {"jsonrpc": "2.0", "method": "call", "params": {"events": batch}}
             send_rpc_req(http_sess, f"{ODOO_URL}/mes/api/import_historical", payload, 'events_rx', len(batch))
+            total_sent += len(batch)
+            
+    print(f"-> Events completed. Total sent: {total_sent}")
 
 def proc_counts(ms_cur, http_sess, start_dt_str, end_dt_str):
     if not LOAD_COUNTS:
         return
         
+    print(f"-> Extracting Counts: {start_dt_str} to {end_dt_str}...")
     ms_cur.execute("""
         SELECT c.RecordTime, c.ArrivedTime, a.Code, s.PLCAddress, c.Value
         FROM dbo.tblDATRawCount c
@@ -139,6 +147,7 @@ def proc_counts(ms_cur, http_sess, start_dt_str, end_dt_str):
         ORDER BY c.RecordTime ASC
     """, (start_dt_str, end_dt_str))
     
+    total_sent = 0
     fetch_batches = iter(lambda: ms_cur.fetchmany(BATCH_SIZE), [])
     for i, rows in enumerate(fetch_batches, start=1):
         batch = []
@@ -155,13 +164,18 @@ def proc_counts(ms_cur, http_sess, start_dt_str, end_dt_str):
             batch.append([ts_norm, arr_norm, mac_name, tag, val_int, evt_id])
             
         if batch:
+            print(f"   Sending batch {i} ({len(batch)} counts)...")
             payload = {"jsonrpc": "2.0", "method": "call", "params": {"counts": batch}}
             send_rpc_req(http_sess, f"{ODOO_URL}/mes/api/import_historical", payload, 'counts_rx', len(batch))
+            total_sent += len(batch)
+            
+    print(f"-> Counts completed. Total sent: {total_sent}")
 
 def proc_processes(ms_cur, http_sess, start_dt_str, end_dt_str):
     if not LOAD_PROCESS:
         return
         
+    print(f"-> Extracting Processes: {start_dt_str} to {end_dt_str}...")
     ms_cur.execute("""
         SELECT p.RecordTime, e2.Code, s.PLCAddress, p.Value
         FROM dbo.tblDATAutoProcess p
@@ -172,6 +186,7 @@ def proc_processes(ms_cur, http_sess, start_dt_str, end_dt_str):
         ORDER BY p.RecordTime ASC
     """, (start_dt_str, end_dt_str))
     
+    total_sent = 0
     fetch_batches = iter(lambda: ms_cur.fetchmany(BATCH_SIZE), [])
     for i, rows in enumerate(fetch_batches, start=1):
         batch = []
@@ -187,10 +202,15 @@ def proc_processes(ms_cur, http_sess, start_dt_str, end_dt_str):
             batch.append([ts_norm, ts_norm, mac_name, tag, val_flt, evt_id])
             
         if batch:
+            print(f"   Sending batch {i} ({len(batch)} processes)...")
             payload = {"jsonrpc": "2.0", "method": "call", "params": {"processes": batch}}
             send_rpc_req(http_sess, f"{ODOO_URL}/mes/api/import_historical", payload, 'processes_rx', len(batch))
+            total_sent += len(batch)
+            
+    print(f"-> Processes completed. Total sent: {total_sent}")
 
 def exec_etl_win(ms_cur, http_sess, start_dt, end_dt):
+    print(f"\n=== Starting ETL Window: {start_dt} to {end_dt} ===")
     start_str = start_dt.strftime('%Y-%m-%d %H:%M:%S')
     end_str = end_dt.strftime('%Y-%m-%d %H:%M:%S')
     proc_events(ms_cur, http_sess, start_str, end_str)
@@ -225,12 +245,14 @@ def main():
             print(f"Init load err: {e}")
 
         if AUTO_LOAD:
+            print("\n=== Entering Auto-Load Mode (polling every 60s) ===")
             while True:
                 time.sleep(60)
                 now_dt = datetime.now()
                 nxt_start_dt = cur_end_dt
                 nxt_end_dt = now_dt.replace(second=0, microsecond=0)
-                if nxt_start_dt >= nxt_end_dt: continue
+                if nxt_start_dt >= nxt_end_dt: 
+                    continue
                 try:
                     ms_conn, ms_cur = ensure_ms_conn(MS_SQL_CONN_STR, ms_conn)
                     exec_etl_win(ms_cur, http_sess, nxt_start_dt, nxt_end_dt)
