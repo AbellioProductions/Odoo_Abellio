@@ -4,6 +4,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8443:8443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/ssl:ro
@@ -20,6 +21,7 @@ services:
     volumes:
       - ./config:/etc/odoo
       - ./custom_addons:/mnt/extra-addons 
+      - ./externals:/mnt/externals
       - ./filestore:/var/lib/odoo
     environment:
       - HOST=${DB_HOST}
