@@ -1,7 +1,7 @@
 #!/bin/bash
 
 domains=("localhost") 
-email="kostycaCD@gmail.com" 
+email="dataspecialist@abellioproductions.ie" 
 rsa_key_size=4096
 data_path="./certbot/conf"
 staging=0 

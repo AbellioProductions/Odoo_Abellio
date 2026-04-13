@@ -108,7 +108,6 @@ BEGIN
         );
     END IF;
 END $$;
-SELECT add_compression_policy('telemetry_count', INTERVAL '14 days', if_not_exists => TRUE);
 
 DO $$ 
 BEGIN 
@@ -120,7 +119,6 @@ BEGIN
         );
     END IF;
 END $$;
-SELECT add_compression_policy('telemetry_event', INTERVAL '14 days', if_not_exists => TRUE);
 
 DO $$ 
 BEGIN 
@@ -132,4 +130,3 @@ BEGIN
         );
     END IF;
 END $$;
-SELECT add_compression_policy('telemetry_process', INTERVAL '14 days', if_not_exists => TRUE);
