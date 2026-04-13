@@ -1,4 +1,4 @@
-# MyOdoo MES / ERP Core
+# Odoo MES / ERP Core
 
 A Manufacturing Execution System (MES) built on Odoo 17, designed to aggregate machine telemetry, generate PQO (Product Quality Output) reports, and automate maintenance workflows via MaintainX.
 
