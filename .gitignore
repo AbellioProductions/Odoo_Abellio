@@ -151,6 +151,7 @@ sessions/
 
 
 pg_data/
+timescale_data/
 db_data/
 docker-compose.override.yml
 
@@ -164,6 +165,8 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+nginx/certs/*.key
+nginx/certs/*.crt
 .env
 
 certbot/live/
