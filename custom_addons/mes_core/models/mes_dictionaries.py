@@ -375,13 +375,13 @@ class MesWorkcenter(models.Model):
 
     def action_force_metrics_update(self):
         self.ensure_one()
-        oee_results = self.env['mes.machine.settings'].get_realtime_oee_batch(self)
+        oee_results = self.env['mes.machine.settings'].sudo().get_realtime_oee_batch(self)
         
         data = oee_results.get(self.id, {})
         if not data or 'error' in data:
             return
 
-        self.write({
+        self.sudo().write({
             'current_oee': data.get('oee', 0.0),
             'current_availability': data.get('availability', 0.0),
             'current_performance': data.get('performance', 0.0),
@@ -667,9 +667,14 @@ class MesHistDashboardWiz(models.TransientModel):
         e_time_wall = e_utc.astimezone(local_tz).replace(tzinfo=None)
 
         res = self.env['mrp.workcenter']._build_chart_payload(
-            wiz.wc_id, wiz.s_time, s_time_wall, wiz.e_time, e_time_wall, wiz.b_min, 
-            wiz.count_id.id if wiz.count_id else False, 
-            wiz.proc_id.id if wiz.proc_id else False
+            wc=wiz.wc_id, 
+            s_loc=s_time_wall, 
+            calc_e_loc=e_time_wall, 
+            s_utc=wiz.s_time, 
+            calc_e_utc=wiz.e_time, 
+            b_min=max(1, wiz.b_min), 
+            count_id=wiz.count_id.id if wiz.count_id else False, 
+            proc_id=wiz.proc_id.id if wiz.proc_id else False
         )
         
         res['shift_start'] = s_time_wall.strftime('%Y-%m-%d %H:%M:%S')

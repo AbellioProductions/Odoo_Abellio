@@ -7,8 +7,8 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-START_DATE_STR = '2026-04-10 12:13:00'
-END_DATE_STR = '2026-04-13 09:50:00'
+START_DATE_STR = '2026-04-14 11:53:00'
+END_DATE_STR = '2026-04-14 11:56:00'
 LOAD_EVENTS = True
 LOAD_COUNTS = True
 LOAD_PROCESS = True
@@ -16,7 +16,7 @@ AUTO_LOAD = True
 BATCH_SIZE = 3000
 
 MS_SQL_CONN_STR = 'DRIVER={SQL Server};SERVER=AB-AS03;DATABASE=Connect;UID=Report;PWD=Report_1t'
-ODOO_URL = 'https://10.0.0.8:8443'
+ODOO_URL = 'https://localhost:8443'
 
 ODOO_DB = 'Abellio_Odoo' 
 ODOO_USER = 'admin'
@@ -221,7 +221,8 @@ def main():
     http_sess = requests.Session()
     http_sess.headers.update({
         'Accept': 'application/json',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Connection': 'close'
     })
 
     auth_url = f"{ODOO_URL.rstrip('/')}/web/session/authenticate"
