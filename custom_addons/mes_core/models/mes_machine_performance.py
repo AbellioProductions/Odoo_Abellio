@@ -203,6 +203,100 @@ class MesMachinePerformance(models.Model):
             'default_plc_value': val
         })
 
+    @api.model
+    def cron_manage_shifts(self):
+        now_utc = fields.Datetime.now()
+        draft_docs = self.search([('state', '=', 'draft')], order='date asc', limit=50)
+
+        for doc in draft_docs:
+            try:
+                shift_start_loc, shift_end_loc = doc._get_local_shift_times()
+                shift_end_utc = doc._get_utc_time(shift_end_loc)
+                
+                closure_threshold_utc = shift_end_utc + timedelta(minutes=5)
+
+                if now_utc >= closure_threshold_utc:
+                    doc._close_shift_and_calculate_totals(shift_start_loc, shift_end_loc, shift_end_utc)
+                    self.env.cr.commit()
+            except Exception as exc:
+                self.env.cr.rollback()
+                _logger.error("SHIFT_CLOSE_FAIL | Doc: %s | Err: %s", doc.id, str(exc))
+
+    def _close_shift_and_calculate_totals(self, shift_start_loc, shift_end_loc, shift_end_utc):
+        mac_settings = self.machine_id.machine_settings_id
+        if not mac_settings:
+            self.write({'state': 'done'})
+            return
+
+        for model_name in ['mes.performance.running', 'mes.performance.alarm', 'mes.performance.slowing']:
+            open_states = self.env[model_name].search([
+                ('performance_id', '=', self.id), 
+                ('end_time', '=', False)
+            ])
+            open_states.write({'end_time': shift_end_utc})
+
+        start_str = shift_start_loc.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = shift_end_loc.strftime('%Y-%m-%d %H:%M:%S')
+        
+        prod_vals = []
+        rej_vals = []
+        
+        with self.env['mes.timescale.base']._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        t.tag_name, 
+                        COALESCE(SUM(t.value), 0) as sum_val, 
+                        COALESCE(MAX(t.value), 0) - COALESCE(
+                            (SELECT value FROM telemetry_count start_t
+                             WHERE start_t.machine_name = %s 
+                               AND start_t.tag_name = t.tag_name 
+                               AND start_t.time <= %s 
+                             ORDER BY start_t.time DESC LIMIT 1), 
+                            COALESCE(MIN(t.value), 0)
+                        ) as cum_val
+                    FROM telemetry_count t
+                    WHERE t.machine_name = %s AND t.time > %s AND t.time <= %s
+                    GROUP BY t.tag_name
+                """, (mac_settings.name, start_str, mac_settings.name, start_str, end_str))
+                
+                for row in cur.fetchall():
+                    tag_name, sum_val, cum_val = row
+                    tag_cfg = mac_settings.count_tag_ids.filtered(lambda s: s.tag_name == tag_name)
+                    
+                    if tag_cfg:
+                        qty = cum_val if tag_cfg[0].is_cumulative else sum_val
+                        if qty > 0:
+                            count_dict_id = tag_cfg[0].count_id
+                            val_dict = {
+                                'performance_id': self.id,
+                                'qty': float(qty),
+                                'reason_id': count_dict_id.id
+                            }
+                            
+                            if count_dict_id == self.machine_id.production_count_id:
+                                prod_vals.append(val_dict)
+                            else:
+                                rej_vals.append(val_dict)
+
+        self.production_ids.unlink()
+        self.rejection_ids.unlink()
+
+        if prod_vals:
+            self.env['mes.performance.production'].create(prod_vals)
+        if rej_vals:
+            self.env['mes.performance.rejection'].create(rej_vals)
+
+        if self._is_empty_shift():
+            self.unlink()
+        else:
+            self.write({'state': 'done'})
+
+    def _is_empty_shift(self):
+        has_production = bool(self.production_ids)
+        has_running = bool(self.running_ids)
+        return not (has_production or has_running)
+    
     def _get_or_create_doc(self, wc, ts_utc):
         mac_tz = pytz.timezone(wc.company_id.tz or 'UTC')
         ts_loc = pytz.utc.localize(ts_utc).astimezone(mac_tz).replace(tzinfo=None)

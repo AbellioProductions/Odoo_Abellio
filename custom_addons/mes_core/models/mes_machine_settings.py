@@ -198,13 +198,21 @@ class MesMachineSettings(models.Model):
         s_str = start_loc.strftime('%Y-%m-%d %H:%M:%S.%f')
         e_str = end_loc.strftime('%Y-%m-%d %H:%M:%S.%f')
         cursor.execute("""
-            SELECT tag_name, 
-                   COALESCE(SUM(value), 0) as sum_val, 
-                   COALESCE(MAX(value) - MIN(value), 0) as cum_val
-            FROM telemetry_count 
-            WHERE machine_name = %s AND time >= %s AND time < %s
-            GROUP BY tag_name
-        """, (self.name, s_str, e_str))
+            SELECT 
+                t.tag_name, 
+                COALESCE(SUM(t.value), 0) as sum_val, 
+                COALESCE(MAX(t.value), 0) - COALESCE(
+                    (SELECT value FROM telemetry_count start_t
+                     WHERE start_t.machine_name = %s 
+                       AND start_t.tag_name = t.tag_name 
+                       AND start_t.time < %s 
+                     ORDER BY start_t.time DESC LIMIT 1), 
+                    COALESCE(MIN(t.value), 0)
+                ) as cum_val
+            FROM telemetry_count t
+            WHERE t.machine_name = %s AND t.time >= %s AND t.time < %s
+            GROUP BY t.tag_name
+        """, (self.name, s_str, self.name, s_str, e_str))
         return {row[0]: {'sum': float(row[1]), 'cum': float(row[2])} for row in cursor.fetchall()}
 
     def _fetch_timeline_raw(self, start_utc, end_utc, wc_id):
@@ -314,12 +322,27 @@ class MesMachineSettings(models.Model):
             if count_tag:
                 with self.env['mes.timescale.base']._connection() as conn:
                     with conn.cursor() as cur:
+                        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
+                        s_wall = pytz.utc.localize(start_loc).astimezone(mac_tz).replace(tzinfo=None)
+                        e_wall = pytz.utc.localize(end_loc).astimezone(mac_tz).replace(tzinfo=None)
+                        
+                        s_str = s_wall.strftime('%Y-%m-%d %H:%M:%S.%f')
+                        e_str = e_wall.strftime('%Y-%m-%d %H:%M:%S.%f')
+                        
                         if is_cumul:
-                            cur.execute("SELECT COALESCE(MAX(value) - MIN(value), 0) FROM telemetry_count WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s", 
-                                        (self.name, count_tag, start_loc.strftime('%Y-%m-%d %H:%M:%S.%f'), end_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                            cur.execute("""
+                                SELECT COALESCE(MAX(value), 0) - COALESCE(
+                                    (SELECT value FROM telemetry_count 
+                                     WHERE machine_name = %s AND tag_name = %s AND time < %s 
+                                     ORDER BY time DESC LIMIT 1), 
+                                    COALESCE(MIN(value), 0)
+                                )
+                                FROM telemetry_count 
+                                WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s
+                            """, (self.name, count_tag, s_str, self.name, count_tag, s_str, e_str))
                         else:
                             cur.execute("SELECT COALESCE(SUM(value), 0) FROM telemetry_count WHERE machine_name = %s AND tag_name = %s AND time >= %s AND time < %s", 
-                                        (self.name, count_tag, start_loc.strftime('%Y-%m-%d %H:%M:%S.%f'), end_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                                        (self.name, count_tag, s_str, e_str))
                         res = cur.fetchone()
                         if res and res[0]:
                             total_produced = float(res[0])

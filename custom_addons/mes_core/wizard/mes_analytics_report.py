@@ -48,6 +48,7 @@ class MesAnalyticsWizard(models.TransientModel):
             if not workcenter: continue
             
             tz_name = workcenter.company_id.tz or 'UTC'
+            mac_tz = pytz.timezone(tz_name)
             shifts = self.env['mes.shift'].search([('company_id', '=', workcenter.company_id.id)], order='sequence, start_hour asc')
             periods_dict = self._get_logical_periods(self.start_datetime, self.end_datetime, shifts, tz_name)
 
@@ -100,16 +101,31 @@ class MesAnalyticsWizard(models.TransientModel):
                     else:
                         valid_count_tags = list(machine.count_tag_ids.mapped('tag_name'))
                         if valid_count_tags:
+                            p_s_wall = pytz.utc.localize(p_start).astimezone(mac_tz).replace(tzinfo=None)
+                            p_e_wall = pytz.utc.localize(p_end).astimezone(mac_tz).replace(tzinfo=None)
+
+                            s_str = p_s_wall.strftime('%Y-%m-%d %H:%M:%S')
+                            e_str = p_e_wall.strftime('%Y-%m-%d %H:%M:%S')
+
                             with self.env['mes.timescale.base']._connection() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute("""
-                                        SELECT tag_name, COALESCE(SUM(value), 0) as sum_val, COALESCE(MAX(value) - MIN(value), 0) as cum_val
-                                        FROM telemetry_count 
-                                        WHERE machine_name = %s AND tag_name = ANY(%s) 
-                                          AND time >= %s::timestamp AT TIME ZONE 'UTC' 
-                                          AND time < %s::timestamp AT TIME ZONE 'UTC'
-                                        GROUP BY tag_name
-                                    """, (machine.name, valid_count_tags, p_start.strftime('%Y-%m-%d %H:%M:%S'), p_end.strftime('%Y-%m-%d %H:%M:%S')))
+                                        SELECT 
+                                            t.tag_name, 
+                                            COALESCE(SUM(t.value), 0) as sum_val, 
+                                            COALESCE(MAX(t.value), 0) - COALESCE(
+                                                (SELECT value FROM telemetry_count start_t
+                                                 WHERE start_t.machine_name = %s 
+                                                   AND start_t.tag_name = t.tag_name 
+                                                   AND start_t.time <= %s 
+                                                 ORDER BY start_t.time DESC LIMIT 1), 
+                                                COALESCE(MIN(t.value), 0)
+                                            ) as cum_val
+                                        FROM telemetry_count t
+                                        WHERE t.machine_name = %s AND t.tag_name = ANY(%s) 
+                                          AND t.time >= %s AND t.time < %s
+                                        GROUP BY t.tag_name
+                                    """, (machine.name, s_str, machine.name, valid_count_tags, s_str, e_str))
                                     
                                     for row in cur.fetchall():
                                         t_name, sum_val, cum_val = row
