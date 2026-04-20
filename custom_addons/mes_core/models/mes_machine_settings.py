@@ -558,23 +558,26 @@ class MesWasteLossStat(models.TransientModel):
         workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
         if not workcenter: return
         
-        start_utc, shift_end_utc = self.env['mes.shift'].get_current_shift_window(workcenter)
-        if not start_utc: return
+        s_loc, e_loc = self.env['mes.shift'].get_current_shift_window(workcenter)
+        if not s_loc: return
         
+        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
         now_utc = fields.Datetime.now()
-        calc_end_utc = min(now_utc, shift_end_utc)
         
-        active_ints, _ = machine._get_planned_working_intervals(start_utc, shift_end_utc, workcenter)
+        s_utc = mac_tz.localize(s_loc, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        e_utc = mac_tz.localize(e_loc, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        calc_end_utc = min(now_utc, e_utc)
+
+        now_loc = pytz.utc.localize(now_utc).astimezone(mac_tz).replace(tzinfo=None)
+        calc_e_loc = min(now_loc, e_loc)
+
+        active_ints, _ = machine._get_planned_working_intervals(s_utc, calc_end_utc, workcenter)
         total_run_sec = machine._fetch_interval_stats(active_ints, workcenter.id, mode='runtime')
         hours_run = (total_run_sec / 3600.0) if total_run_sec > 0 else 0.0
 
-        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
-        s_loc = pytz.utc.localize(start_utc).astimezone(mac_tz).replace(tzinfo=None)
-        e_loc = pytz.utc.localize(calc_end_utc).astimezone(mac_tz).replace(tzinfo=None)
-
         with self.env['mes.timescale.base']._connection() as conn:
             with conn.cursor() as cur:
-                raw_counts = machine._fetch_waste_stats_raw(cur, s_loc, e_loc)
+                raw_counts = machine._fetch_waste_stats_raw(cur, s_loc, calc_e_loc)
 
         vals = []
         for c_def in machine.count_tag_ids:
@@ -585,8 +588,10 @@ class MesWasteLossStat(models.TransientModel):
             
             if val > 0:
                 vals.append({
-                    'machine_id': machine.id, 'name': c_def.count_id.name if c_def.count_id else c_def.tag_name,
-                    'waste_sum': val, 'waste_per_hour': (val / hours_run) if hours_run > 0 else 0.0
+                    'machine_id': machine.id, 
+                    'name': c_def.count_id.name if c_def.count_id else c_def.tag_name,
+                    'waste_sum': val, 
+                    'waste_per_hour': (val / hours_run) if hours_run > 0 else 0.0
                 })
         if vals: self.with_context(skip_generation=True).create(vals)
 
@@ -607,10 +612,17 @@ class MesDowntimeLossStat(models.TransientModel):
         workcenter = self.env['mrp.workcenter'].search([('machine_settings_id', '=', machine.id)], limit=1)
         if not workcenter: return
         
-        start_utc, shift_end_utc = self.env['mes.shift'].get_current_shift_window(workcenter)
-        if not start_utc: return
+        s_loc, e_loc = self.env['mes.shift'].get_current_shift_window(workcenter)
+        if not s_loc: return
         
-        active_ints, _ = machine._get_planned_working_intervals(start_utc, shift_end_utc, workcenter)
+        mac_tz = pytz.timezone(workcenter.company_id.tz or 'UTC')
+        now_utc = fields.Datetime.now()
+        
+        s_utc = mac_tz.localize(s_loc, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        e_utc = mac_tz.localize(e_loc, is_dst=False).astimezone(pytz.utc).replace(tzinfo=None)
+        calc_end_utc = min(now_utc, e_utc)
+        
+        active_ints, _ = machine._get_planned_working_intervals(s_utc, calc_end_utc, workcenter)
         total_run_sec = machine._fetch_interval_stats(active_ints, workcenter.id, mode='runtime')
         hours_run = (total_run_sec / 3600.0) if total_run_sec > 0 else 0.0
         
