@@ -114,11 +114,19 @@ class MesRejectReportWizard(models.TransientModel):
 
                 if doc:
                     valid_count_ids = signals.mapped('count_id').ids
+                    
                     for rej in doc.rejection_ids:
                         if rej.reason_id.id in valid_count_ids:
                             cnt = rej.reason_id
                             key = (machine.id, machine.name, p_name, cnt.id, cnt.name, cnt.parent_path, cnt.is_module_count, cnt.wheel, cnt.module)
                             aggregated[key] = aggregated.get(key, 0.0) + rej.qty
+                            
+                    for prod in doc.production_ids:
+                        if prod.reason_id.id in valid_count_ids:
+                            cnt = prod.reason_id
+                            key = (machine.id, machine.name, p_name, cnt.id, cnt.name, cnt.parent_path, cnt.is_module_count, cnt.wheel, cnt.module)
+                            aggregated[key] = aggregated.get(key, 0.0) + prod.qty
+                            
                 else:
                     valid_tags = list(signals.mapped('tag_name'))
                     if valid_tags:
