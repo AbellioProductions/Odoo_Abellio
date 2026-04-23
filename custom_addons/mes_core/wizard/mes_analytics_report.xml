@@ -76,6 +76,18 @@
         </field>
     </record>
 
+<record id="view_mes_alarm_report_graph" model="ir.ui.view">
+        <field name="name">mes.alarm.report.line.graph</field>
+        <field name="model">mes.alarm.report.line</field>
+        <field name="arch" type="xml">
+            <graph string="Alarms Trend" type="line" sample="1">
+                <field name="period_name"/>
+                <field name="row_group_label"/>
+                <field name="frequency" type="measure"/>
+            </graph>
+        </field>
+    </record>
+
     <record id="action_mes_analytics_wizard" model="ir.actions.act_window">
         <field name="name">Shift Analytics Dashboard</field>
         <field name="res_model">mes.analytics.wizard</field>

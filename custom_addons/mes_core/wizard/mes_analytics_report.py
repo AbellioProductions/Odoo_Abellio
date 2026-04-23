@@ -184,7 +184,7 @@ class MesAnalyticsWizard(models.TransientModel):
             'name': 'Shift Analytics Matrix',
             'type': 'ir.actions.act_window',
             'res_model': 'mes.analytics.report.line',
-            'view_mode': 'tree,pivot', 
+            'view_mode': 'pivot,graph,tree', 
             'domain': [('user_id', '=', self.env.user.id)],
             'context': self._build_skd_context(measures)
         }

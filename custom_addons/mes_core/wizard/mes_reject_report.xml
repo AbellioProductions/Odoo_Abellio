@@ -27,6 +27,18 @@
         </field>
     </record>
 
+<record id="view_mes_alarm_report_graph" model="ir.ui.view">
+        <field name="name">mes.alarm.report.line.graph</field>
+        <field name="model">mes.alarm.report.line</field>
+        <field name="arch" type="xml">
+            <graph string="Alarms Trend" type="line" sample="1">
+                <field name="period_name"/>
+                <field name="row_group_label"/>
+                <field name="frequency" type="measure"/>
+            </graph>
+        </field>
+    </record>
+
     <record id="view_mes_reject_wizard_form" model="ir.ui.view">
         <field name="name">mes.reject.report.wizard.form</field>
         <field name="model">mes.reject.report.wizard</field>

@@ -213,7 +213,7 @@ class MesRejectReportWizard(models.TransientModel):
             'name': 'Reject Matrix',
             'type': 'ir.actions.act_window',
             'res_model': 'mes.reject.report.line',
-            'view_mode': 'pivot,tree',
+            'view_mode': 'pivot,graph,tree',
             'domain': [('user_id', '=', self.env.user.id)],
             'context': ctx
         }

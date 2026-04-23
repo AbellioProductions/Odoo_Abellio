@@ -140,7 +140,9 @@ class MesHistPerformanceWiz(models.TransientModel):
                 """, (mac.name, s_loc.strftime('%Y-%m-%d %H:%M:%S.%f'), calc_e_loc.strftime('%Y-%m-%d %H:%M:%S.%f')))
                 events = cur.fetchall()
 
-        active_state = None
+        current_model = None
+        current_loss_id = None
+        current_start_utc = s_utc
 
         if baseline:
             _, tag, val = baseline
@@ -156,62 +158,109 @@ class MesHistPerformanceWiz(models.TransientModel):
                 tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
                 
             if tgt_model and evt_id:
-                active_state = env[tgt_model].create({
-                    'performance_id': doc.id,
-                    'loss_id': evt_id,
-                    'start_time': s_utc
-                })
+                current_model = tgt_model
+                current_loss_id = evt_id
 
-        for row in events:
-            ts_raw, tag, val = row
-            
-            if isinstance(ts_raw, str):
-                ts_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
-            else:
-                ts_dt = ts_raw.replace(tzinfo=None)
+        if wc.telemetry_state_logic == 'states':
+            def eval_state(st, rsn, last_rsn):
+                if st is None: return None, None, last_rsn
                 
-            evt_utc = self._get_utc(wc, ts_dt)
+                st = int(float(st))
+                rsn = int(float(rsn)) if rsn is not None else 0
 
-            if wc.telemetry_state_logic == 'states':
-                if tag == 'OEE.nStopRootReason':
-                    last_reason_val = val
-                    if active_state and active_state._name == 'mes.performance.alarm':
-                        evt = perf_model._resolve_event(mac, tag, int(val) if val is not None else 0)
-                        if evt: active_state.write({'loss_id': evt.id})
-                    continue
+                is_run = False
+                if wc.runtime_event_id:
+                    run_sig = mac.event_tag_ids.filtered(lambda x: x.event_id == wc.runtime_event_id)
+                    if run_sig:
+                        is_run = (run_sig[0].tag_name == 'OEE.nMachineState' and run_sig[0].plc_value == st)
+                    else:
+                        is_run = (wc.runtime_event_id.default_event_tag_type == 'OEE.nMachineState' and wc.runtime_event_id.default_plc_value == st)
                 
-                if tag != 'OEE.nMachineState':
-                    continue
-                    
-                plc_val = int(val) if val is not None else 0
-                if plc_val == 1:
-                    tgt_model = 'mes.performance.alarm'
-                    evt = perf_model._resolve_event(mac, 'OEE.nStopRootReason', int(last_reason_val) if last_reason_val is not None else 0)
-                    evt_id = evt.id if evt else None
+                if is_run:
+                    return 'mes.performance.running', wc.runtime_event_id.id, None
+                
+                eff_st = st
+                if st in [3, 5] and last_rsn is not None and rsn == last_rsn:
+                    eff_st = 1
+                
+                if eff_st == 1:
+                    evt = perf_model._resolve_event(mac, 'OEE.nStopRootReason', rsn)
+                    return 'mes.performance.alarm', (evt.id if evt else None), rsn
                 else:
-                    tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
-            else:
+                    evt = perf_model._resolve_event(mac, 'OEE.nMachineState', st)
+                    return 'mes.performance.slowing', (evt.id if evt else None), last_rsn
+
+            current_tags = {}
+            if baseline:
+                current_tags[baseline[1]] = baseline[2]
+            current_tags['OEE.nStopRootReason'] = last_reason_val
+
+            for row in events:
+                ts_raw, tag, val = row
+                
+                if isinstance(ts_raw, str):
+                    ts_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
+                else:
+                    ts_dt = ts_raw.replace(tzinfo=None)
+                    
+                evt_utc = self._get_utc(wc, ts_dt)
+
+                current_tags[tag] = val
+                
+                if tag not in ['OEE.nMachineState', 'OEE.nStopRootReason']:
+                    continue
+
+                tgt_model, evt_id, last_reason_val = eval_state(
+                    current_tags.get('OEE.nMachineState'), 
+                    current_tags.get('OEE.nStopRootReason'), 
+                    last_reason_val
+                )
+
+                if tgt_model and evt_id and (tgt_model != current_model or evt_id != current_loss_id):
+                    if current_model and current_loss_id and current_start_utc < evt_utc:
+                        env[current_model].create({
+                            'performance_id': doc.id,
+                            'loss_id': current_loss_id,
+                            'start_time': current_start_utc,
+                            'end_time': evt_utc
+                        })
+                    current_model = tgt_model
+                    current_loss_id = evt_id
+                    current_start_utc = evt_utc
+        else:
+            for row in events:
+                ts_raw, tag, val = row
+                
+                if isinstance(ts_raw, str):
+                    ts_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
+                else:
+                    ts_dt = ts_raw.replace(tzinfo=None)
+                    
+                evt_utc = self._get_utc(wc, ts_dt)
+
                 tgt_model, evt_id = perf_model.classify_fsm_transition(wc, tag, val)
 
-            if not tgt_model or not evt_id:
-                continue
+                if tgt_model and evt_id and (tgt_model != current_model or evt_id != current_loss_id):
+                    if current_model and current_loss_id and current_start_utc < evt_utc:
+                        env[current_model].create({
+                            'performance_id': doc.id,
+                            'loss_id': current_loss_id,
+                            'start_time': current_start_utc,
+                            'end_time': evt_utc
+                        })
+                    current_model = tgt_model
+                    current_loss_id = evt_id
+                    current_start_utc = evt_utc
 
-            if active_state and active_state._name == tgt_model and active_state.loss_id.id == evt_id:
-                continue
-
-            if active_state:
-                active_state.write({'end_time': evt_utc})
-
-            active_state = env[tgt_model].create({
+        if current_model and current_loss_id and current_start_utc < calc_e_utc:
+            env[current_model].create({
                 'performance_id': doc.id,
-                'loss_id': evt_id,
-                'start_time': evt_utc
+                'loss_id': current_loss_id,
+                'start_time': current_start_utc,
+                'end_time': calc_e_utc
             })
 
         if not is_cur:
-            if active_state:
-                active_state.write({'end_time': calc_e_utc})
-            
             self._process_shift_counts(env, doc, wc, s_loc, e_loc)
 
             if self._is_empty_doc(doc):

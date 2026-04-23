@@ -116,6 +116,9 @@ class MesMachinePerformance(models.Model):
             if active_state and evt_utc <= active_state.start_time:
                 continue
 
+            tgt_model = None
+            evt_id = None
+
             if wc.telemetry_state_logic == 'states':
                 if tag == 'OEE.nStopRootReason':
                     last_reason_val = val
@@ -132,6 +135,11 @@ class MesMachinePerformance(models.Model):
                     tgt_model = 'mes.performance.alarm'
                     evt = self._resolve_event(mac, 'OEE.nStopRootReason', int(last_reason_val) if last_reason_val is not None else 0)
                     evt_id = evt.id if evt else None
+                elif plc_val in [3, 5] and active_state and active_state._name == 'mes.performance.alarm':
+                    evt = self._resolve_event(mac, 'OEE.nStopRootReason', int(last_reason_val) if last_reason_val is not None else 0)
+                    if evt and evt.id == active_state.loss_id.id:
+                        continue 
+                    tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
                 else:
                     tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
             else:
@@ -140,7 +148,13 @@ class MesMachinePerformance(models.Model):
             if not tgt_model or not evt_id:
                 continue
 
-            if active_state and active_state._name == tgt_model and active_state.loss_id.id == evt_id:
+            active_model = active_state._name if active_state else None
+            active_loss_id = active_state.loss_id.id if active_state else None
+
+            if active_model == tgt_model and active_loss_id == evt_id:
+                continue
+
+            if active_model == 'mes.performance.alarm' and tgt_model != 'mes.performance.running':
                 continue
 
             if active_state:
@@ -223,21 +237,140 @@ class MesMachinePerformance(models.Model):
                 _logger.error("SHIFT_CLOSE_FAIL | Doc: %s | Err: %s", doc.id, str(exc))
 
     def _close_shift_and_calculate_totals(self, shift_start_loc, shift_end_loc, shift_end_utc):
-        mac_settings = self.machine_id.machine_settings_id
+        wc = self.machine_id
+        mac_settings = wc.machine_settings_id
         if not mac_settings:
             self.write({'state': 'done'})
             return
 
-        for model_name in ['mes.performance.running', 'mes.performance.alarm', 'mes.performance.slowing']:
-            open_states = self.env[model_name].search([
-                ('performance_id', '=', self.id), 
-                ('end_time', '=', False)
-            ])
-            open_states.write({'end_time': shift_end_utc})
+        self.running_ids.unlink()
+        self.alarm_ids.unlink()
+        self.slowing_ids.unlink()
+        self.production_ids.unlink()
+        self.rejection_ids.unlink()
 
-        start_str = shift_start_loc.strftime('%Y-%m-%d %H:%M:%S')
-        end_str = shift_end_loc.strftime('%Y-%m-%d %H:%M:%S')
+        shift_start_utc = self._get_utc_time(shift_start_loc)
+        start_str = shift_start_loc.strftime('%Y-%m-%d %H:%M:%S.%f')
+        end_str = shift_end_loc.strftime('%Y-%m-%d %H:%M:%S.%f')
         
+        with self.env['mes.timescale.base']._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tag_name, value FROM (
+                        SELECT tag_name, value, row_number() OVER (PARTITION BY tag_name ORDER BY time DESC) as rn
+                        FROM telemetry_event
+                        WHERE machine_name = %s AND time <= %s
+                    ) sub WHERE rn = 1
+                """, (mac_settings.name, start_str))
+                current_tags = {r[0]: r[1] for r in cur.fetchall()}
+
+                cur.execute("""
+                    SELECT time, tag_name, value FROM telemetry_event
+                    WHERE machine_name = %s AND time > %s AND time <= %s
+                    ORDER BY time ASC
+                """, (mac_settings.name, start_str, end_str))
+                shift_events = cur.fetchall()
+
+        current_model = None
+        current_loss_id = None
+        current_start_utc = shift_start_utc
+        last_alarm_rsn = None
+
+        if wc.telemetry_state_logic == 'states':
+            st_val = current_tags.get('OEE.nMachineState')
+            rsn_val = current_tags.get('OEE.nStopRootReason', 0)
+            if st_val is not None and int(float(st_val)) == 1:
+                last_alarm_rsn = int(float(rsn_val))
+
+            def eval_state(tags, last_rsn):
+                st = tags.get('OEE.nMachineState')
+                rsn = tags.get('OEE.nStopRootReason', 0)
+                if st is None: return None, None, last_rsn
+                
+                st = int(float(st))
+                rsn = int(float(rsn))
+
+                is_run = False
+                if wc.runtime_event_id:
+                    run_sig = mac_settings.event_tag_ids.filtered(lambda x: x.event_id == wc.runtime_event_id)
+                    if run_sig:
+                        is_run = (run_sig[0].tag_name == 'OEE.nMachineState' and run_sig[0].plc_value == st)
+                    else:
+                        is_run = (wc.runtime_event_id.default_event_tag_type == 'OEE.nMachineState' and wc.runtime_event_id.default_plc_value == st)
+                
+                if is_run:
+                    return 'mes.performance.running', wc.runtime_event_id.id, None
+                
+                eff_st = st
+                if st in [3, 5] and last_rsn is not None and rsn == last_rsn:
+                    eff_st = 1
+                
+                if eff_st == 1:
+                    evt = self._resolve_event(mac_settings, 'OEE.nStopRootReason', rsn)
+                    return 'mes.performance.alarm', (evt.id if evt else None), rsn
+                else:
+                    evt = self._resolve_event(mac_settings, 'OEE.nMachineState', st)
+                    return 'mes.performance.slowing', (evt.id if evt else None), last_rsn
+
+            current_model, current_loss_id, last_alarm_rsn = eval_state(current_tags, last_alarm_rsn)
+
+            for row in shift_events:
+                ts_raw, tag, val = row
+                if isinstance(ts_raw, str):
+                    evt_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
+                else:
+                    evt_dt = ts_raw.replace(tzinfo=None)
+                
+                tz_name = wc.company_id.tz or 'UTC'
+                local_tz = pytz.timezone(tz_name)
+                evt_utc = local_tz.localize(evt_dt).astimezone(pytz.utc).replace(tzinfo=None)
+
+                current_tags[tag] = val
+                tgt_model, evt_id, last_alarm_rsn = eval_state(current_tags, last_alarm_rsn)
+
+                if tgt_model and evt_id and (tgt_model != current_model or evt_id != current_loss_id):
+                    if current_model and current_loss_id and current_start_utc < evt_utc:
+                        self.env[current_model].create({
+                            'performance_id': self.id,
+                            'loss_id': current_loss_id,
+                            'start_time': current_start_utc,
+                            'end_time': evt_utc
+                        })
+                    current_model = tgt_model
+                    current_loss_id = evt_id
+                    current_start_utc = evt_utc
+        else:
+            for row in shift_events:
+                ts_raw, tag, val = row
+                if isinstance(ts_raw, str):
+                    evt_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
+                else:
+                    evt_dt = ts_raw.replace(tzinfo=None)
+                tz_name = wc.company_id.tz or 'UTC'
+                local_tz = pytz.timezone(tz_name)
+                evt_utc = local_tz.localize(evt_dt).astimezone(pytz.utc).replace(tzinfo=None)
+
+                tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
+                if tgt_model and evt_id and (tgt_model != current_model or evt_id != current_loss_id):
+                    if current_model and current_loss_id and current_start_utc < evt_utc:
+                        self.env[current_model].create({
+                            'performance_id': self.id,
+                            'loss_id': current_loss_id,
+                            'start_time': current_start_utc,
+                            'end_time': evt_utc
+                        })
+                    current_model = tgt_model
+                    current_loss_id = evt_id
+                    current_start_utc = evt_utc
+
+        if current_model and current_loss_id and current_start_utc < shift_end_utc:
+            self.env[current_model].create({
+                'performance_id': self.id,
+                'loss_id': current_loss_id,
+                'start_time': current_start_utc,
+                'end_time': shift_end_utc
+            })
+
         prod_vals = []
         rej_vals = []
         
@@ -278,9 +411,6 @@ class MesMachinePerformance(models.Model):
                                 prod_vals.append(val_dict)
                             else:
                                 rej_vals.append(val_dict)
-
-        self.production_ids.unlink()
-        self.rejection_ids.unlink()
 
         if prod_vals:
             self.env['mes.performance.production'].create(prod_vals)

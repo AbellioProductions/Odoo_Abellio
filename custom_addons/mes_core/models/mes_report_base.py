@@ -147,6 +147,8 @@ class MesReportBaseWizard(models.TransientModel):
         return {
             'pivot_row_groupby': ['row_group_label'],
             'pivot_column_groupby': ['col_group_label'],
+            'graph_groupbys': ['period_name', 'row_group_label'],
+            'graph_measure': measures[0] if measures else 'frequency',
             'pivot_measures': measures,
         }
 
