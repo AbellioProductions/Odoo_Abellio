@@ -46,6 +46,8 @@ class MesMachinePerformance(models.Model):
     def cron_process_pending_events(self):
         workcenters = self.env['mrp.workcenter'].search([('machine_settings_id', '!=', False)])
         for wc in workcenters:
+            if wc.is_hist_syncing:
+                continue
             try:
                 self._sync_machine_fsm(wc)
             except Exception as e:
@@ -53,8 +55,8 @@ class MesMachinePerformance(models.Model):
 
     def _sync_machine_fsm(self, wc):
         self.env.flush_all()
-        open_states = []
         
+        open_states = []
         for model in ['mes.performance.running', 'mes.performance.alarm', 'mes.performance.slowing']:
             records = self.env[model].search([
                 ('performance_id.machine_id', '=', wc.id),
@@ -68,9 +70,20 @@ class MesMachinePerformance(models.Model):
             active_state = open_states[0]
             
             for orphan in open_states[1:]:
-                orphan.write({'end_time': active_state.start_time})
+                if orphan.performance_id.state != 'done':
+                    orphan.write({'end_time': active_state.start_time})
 
-        last_utc_ts = active_state.start_time if active_state else (fields.Datetime.now() - timedelta(days=1))
+        latest_ts = None
+        for model in ['mes.performance.running', 'mes.performance.alarm', 'mes.performance.slowing']:
+            rec_start = self.env[model].search([('performance_id.machine_id', '=', wc.id)], order='start_time desc', limit=1)
+            if rec_start and (not latest_ts or rec_start.start_time > latest_ts):
+                latest_ts = rec_start.start_time
+            
+            rec_end = self.env[model].search([('performance_id.machine_id', '=', wc.id), ('end_time', '!=', False)], order='end_time desc', limit=1)
+            if rec_end and (not latest_ts or rec_end.end_time > latest_ts):
+                latest_ts = rec_end.end_time
+
+        last_utc_ts = latest_ts if latest_ts else (fields.Datetime.now() - timedelta(days=1))
         
         tz_name = wc.company_id.tz or 'UTC'
         local_tz = pytz.timezone(tz_name)
@@ -124,7 +137,8 @@ class MesMachinePerformance(models.Model):
                     last_reason_val = val
                     if active_state and active_state._name == 'mes.performance.alarm':
                         evt = self._resolve_event(mac, tag, int(val) if val is not None else 0)
-                        if evt: active_state.write({'loss_id': evt.id})
+                        if evt and active_state.performance_id.state != 'done':
+                            active_state.write({'loss_id': evt.id})
                     continue
                 
                 if tag != 'OEE.nMachineState':
@@ -157,11 +171,12 @@ class MesMachinePerformance(models.Model):
             if active_model == 'mes.performance.alarm' and tgt_model != 'mes.performance.running':
                 continue
 
-            if active_state:
+            if active_state and active_state.performance_id.state != 'done':
                 active_state.write({'end_time': evt_utc})
 
             perf_doc = self._get_or_create_doc(wc, evt_utc)
-            if not perf_doc:
+            if not perf_doc or perf_doc.state == 'done':
+                active_state = None
                 continue
 
             active_state = self.env[tgt_model].create({
@@ -363,13 +378,28 @@ class MesMachinePerformance(models.Model):
                     current_loss_id = evt_id
                     current_start_utc = evt_utc
 
-        if current_model and current_loss_id and current_start_utc < shift_end_utc:
-            self.env[current_model].create({
-                'performance_id': self.id,
-                'loss_id': current_loss_id,
-                'start_time': current_start_utc,
-                'end_time': shift_end_utc
-            })
+        if current_model and current_loss_id:
+            if current_start_utc < shift_end_utc:
+                self.env[current_model].create({
+                    'performance_id': self.id,
+                    'loss_id': current_loss_id,
+                    'start_time': current_start_utc,
+                    'end_time': shift_end_utc
+                })
+            
+            next_doc = self._get_or_create_doc(wc, shift_end_utc + timedelta(seconds=1))
+            if next_doc and next_doc.state == 'draft':
+                existing_seed = self.env[current_model].search([
+                    ('performance_id', '=', next_doc.id),
+                    ('start_time', '=', shift_end_utc),
+                    ('end_time', '=', False)
+                ])
+                if not existing_seed:
+                    self.env[current_model].create({
+                        'performance_id': next_doc.id,
+                        'loss_id': current_loss_id,
+                        'start_time': shift_end_utc
+                    })
 
         prod_vals = []
         rej_vals = []

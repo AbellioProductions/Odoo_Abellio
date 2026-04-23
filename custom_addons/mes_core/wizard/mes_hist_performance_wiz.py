@@ -20,6 +20,10 @@ class MesHistPerformanceWiz(models.TransientModel):
         db_name = self.env.cr.dbname
         uid = self.env.uid
         context = self.env.context.copy()
+
+        wcs = self.env['mrp.workcenter'].browse(self.machine_ids.ids)
+        wcs.write({'is_hist_syncing': True})
+        self.env.cr.commit()
         
         _logger.info("WIZARD_INIT: Starting thread for %s machines", len(self.machine_ids))
         
@@ -88,6 +92,10 @@ class MesHistPerformanceWiz(models.TransientModel):
                 cr.rollback()
                 error_msg = f"WIZARD_FAULT: Critical failure in background thread!\nError: {str(e)}\n{traceback.format_exc()}"
                 _logger.error(error_msg)
+            finally:
+                wcs = env['mrp.workcenter'].browse(machine_ids)
+                wcs.write({'is_hist_syncing': False})
+                cr.commit()
 
     @api.model
     def _process_single_shift_fsm(self, env, item, now_utc):

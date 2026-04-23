@@ -284,6 +284,8 @@ class MesProcess(models.Model):
 class MesWorkcenter(models.Model):
     _inherit = 'mrp.workcenter'
 
+    is_hist_syncing = fields.Boolean(string='Historical Sync in Progress', default=False)
+
     machine_number = fields.Integer(string='Machine Number')
     maintainx_id = fields.Integer(string='MaintainX ID')
     code_imatec = fields.Char(string='Imatec Name')
