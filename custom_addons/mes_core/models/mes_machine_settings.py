@@ -507,10 +507,6 @@ class MesSignalCount(models.Model):
         for rec in self: self._execute_from_file('delete_signal.sql', (rec.machine_id.name, rec.tag_name))
         return super().unlink()
 
-    @api.onchange('count_id')
-    def _onchange_count_id(self):
-        if self.count_id: self.is_cumulative = self.count_id.is_cumulative
-
 class MesSignalEvent(models.Model):
     _name = 'mes.signal.event'
     _inherit = 'mes.signal.base'

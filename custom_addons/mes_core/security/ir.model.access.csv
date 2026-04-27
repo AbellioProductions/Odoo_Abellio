@@ -126,3 +126,12 @@ access_mes_ingred_operator,mes.ingred.operator,model_mes_production_ingredient,m
 access_mes_flat_dt_operator,mes.flat.dt.operator,model_mes_flat_downtime,mes_core.group_mes_operator,1,0,0,0
 access_mes_waste_loss_stat_operator,mes.waste.loss.stat.operator,model_mes_waste_loss_stat,mes_core.group_mes_operator,1,1,1,1
 access_mes_downtime_loss_stat_operator,mes.downtime.loss.stat.operator,model_mes_downtime_loss_stat,mes_core.group_mes_operator,1,1,1,1
+
+
+access_mes_api_read_settings,mes.api.read.settings,model_mes_machine_settings,mes_core.group_mes_api_read,1,0,0,0
+access_mes_api_read_wc,mes.api.read.wc,model_mrp_workcenter,mes_core.group_mes_api_read,1,0,0,0
+access_mes_api_read_shift,mes.api.read.shift,model_mes_shift,mes_core.group_mes_api_read,1,0,0,0
+access_mes_api_read_count,mes.api.read.count,model_mes_counts,mes_core.group_mes_api_read,1,0,0,0
+access_mes_api_read_process,mes.api.read.process,model_mes_process,mes_core.group_mes_api_read,1,0,0,0
+access_mes_api_read_event,mes.api.read.event,model_mes_event,mes_core.group_mes_api_read,1,0,0,0
+access_mes_api_write_settings,mes.api.write.settings,model_mes_machine_settings,mes_core.group_mes_api_write,1,1,0,0
