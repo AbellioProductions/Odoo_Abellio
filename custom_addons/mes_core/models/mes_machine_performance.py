@@ -42,6 +42,11 @@ class MesMachinePerformance(models.Model):
         
         return super().create(vals_list)
 
+    def action_set_draft(self):
+        for rec in self:
+            if rec.state == 'done':
+                rec.write({'state': 'draft'})
+
     @api.model
     def cron_process_pending_events(self):
         workcenters = self.env['mrp.workcenter'].search([('machine_settings_id', '!=', False)])

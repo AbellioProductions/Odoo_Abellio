@@ -338,7 +338,6 @@ class PlcNode:
                 except Exception as e:
                     log.error(f"TAG_BIND_FAIL [{t.tag_name}]: {e}")
             
-            # Самовосстановление при пуске машины (защита от загрузки ОС)
             if self.cfg_tags and bind_success == 0:
                 log.warning("PLC_NOT_READY: Zero tags bound. Retrying in 10s...")
                 self.is_connected = False
@@ -481,10 +480,10 @@ def main():
         db_path=os.path.join(app_dir, "tx.sqlite"),
         retn_days=30,
         cache_path=os.path.join(app_dir, "cfg.json"),
-        api_url=os.getenv('API_URL', 'https://10.0.0.8:8443'),#https://86.47.88.185:8443
+        api_url=os.getenv('API_URL', 'https://86.47.88.185:8443'),
         api_db=os.getenv('API_DB', 'Abellio_Odoo'),
-        api_usr=os.getenv('API_USR', 'admin'),
-        api_pwd=os.getenv('API_PWD', 'admin')
+        api_usr=os.getenv('API_USR', 'Telemetry'),
+        api_pwd=os.getenv('API_PWD', 'yrtemelet')
     )
     RuntimeManager(cfg).run()
 

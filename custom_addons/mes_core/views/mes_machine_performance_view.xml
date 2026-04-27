@@ -20,6 +20,12 @@
             <form>
                 <header>
                     <field name="state" widget="statusbar" clickable="1" groups="mes_core.group_mes_manager"/>
+                    <button name="action_set_draft" 
+                            string="Set to Draft" 
+                            type="object" 
+                            invisible="state != 'done'" 
+                            groups="mes_core.group_mes_administrator"
+                            confirm="Are you sure you want to unlock this document?"/>
                 </header>
                 <sheet>
                     <div class="oe_title">
