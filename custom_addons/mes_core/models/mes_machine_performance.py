@@ -15,7 +15,7 @@ class MesMachinePerformance(models.Model):
     date = fields.Date(string='Date', required=True, default=fields.Date.context_today)
     shift_id = fields.Many2one('mes.shift', string='Shift', required=True)
     machine_id = fields.Many2one('mrp.workcenter', string='Machine', required=True)
-    company_id = fields.Many2one('res.company', string='Company', required=True, default=lambda self: self.env.company)
+    company_id = fields.Many2one('res.company', string='Company', related='machine_id.company_id', store=True, readonly=True)
     state = fields.Selection([('draft', 'Draft'), ('done', 'Locked')], string='Status', default='draft', tracking=True)
 
     alarm_ids = fields.One2many('mes.performance.alarm', 'performance_id', string='Alarms')
@@ -93,10 +93,11 @@ class MesMachinePerformance(models.Model):
         tz_name = wc.company_id.tz or 'UTC'
         local_tz = pytz.timezone(tz_name)
         last_local_ts = pytz.utc.localize(last_utc_ts).astimezone(local_tz).replace(tzinfo=None)
+        last_local_str = last_local_ts.strftime('%Y-%m-%d %H:%M:%S.%f')
         
         mac = wc.machine_settings_id
-        
         last_reason_val = 0
+
         if wc.telemetry_state_logic == 'states':
             with self.env['mes.timescale.base']._connection() as conn:
                 with conn.cursor() as cur:
@@ -104,7 +105,7 @@ class MesMachinePerformance(models.Model):
                         SELECT value FROM telemetry_event 
                         WHERE machine_name = %s AND tag_name = 'OEE.nStopRootReason' AND time <= %s
                         ORDER BY time DESC LIMIT 1
-                    """, (mac.name, last_local_ts.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                    """, (mac.name, last_local_str))
                     res = cur.fetchone()
                     if res: last_reason_val = res[0]
 
@@ -115,7 +116,7 @@ class MesMachinePerformance(models.Model):
                     FROM telemetry_event 
                     WHERE machine_name = %s AND time > %s
                     ORDER BY time ASC LIMIT 5000
-                """, (mac.name, last_local_ts.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                """, (mac.name, last_local_str))
                 rows = cur.fetchall()
 
         if not rows:
@@ -296,6 +297,9 @@ class MesMachinePerformance(models.Model):
         current_start_utc = shift_start_utc
         last_alarm_rsn = None
 
+        tz_name = wc.company_id.tz or 'UTC'
+        local_tz = pytz.timezone(tz_name)
+
         if wc.telemetry_state_logic == 'states':
             st_val = current_tags.get('OEE.nMachineState')
             rsn_val = current_tags.get('OEE.nStopRootReason', 0)
@@ -341,8 +345,6 @@ class MesMachinePerformance(models.Model):
                 else:
                     evt_dt = ts_raw.replace(tzinfo=None)
                 
-                tz_name = wc.company_id.tz or 'UTC'
-                local_tz = pytz.timezone(tz_name)
                 evt_utc = local_tz.localize(evt_dt).astimezone(pytz.utc).replace(tzinfo=None)
 
                 current_tags[tag] = val
@@ -366,11 +368,11 @@ class MesMachinePerformance(models.Model):
                     evt_dt = fields.Datetime.to_datetime(ts_raw.replace('T', ' ').replace('Z', '')[:19])
                 else:
                     evt_dt = ts_raw.replace(tzinfo=None)
-                tz_name = wc.company_id.tz or 'UTC'
-                local_tz = pytz.timezone(tz_name)
+                
                 evt_utc = local_tz.localize(evt_dt).astimezone(pytz.utc).replace(tzinfo=None)
 
                 tgt_model, evt_id = self.classify_fsm_transition(wc, tag, val)
+                
                 if tgt_model and evt_id and (tgt_model != current_model or evt_id != current_loss_id):
                     if current_model and current_loss_id and current_start_utc < evt_utc:
                         self.env[current_model].create({
@@ -501,7 +503,7 @@ class MesMachinePerformance(models.Model):
 
     def _get_utc_time(self, local_naive_dt):
         self.ensure_one()
-        tz_name = self.company_id.tz or 'UTC'
+        tz_name = self.machine_id.company_id.tz or 'UTC'
         mac_tz = pytz.timezone(tz_name)
         local_dt = mac_tz.localize(local_naive_dt.replace(tzinfo=None))
         return local_dt.astimezone(pytz.utc).replace(tzinfo=None)
