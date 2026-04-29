@@ -134,6 +134,27 @@ class MesMachinePerformance(models.Model):
                 active_state.write({'end_time': evt_utc})
 
             perf_doc = self._get_or_create_doc(wc, evt_utc)
+
+            if active_state and active_state.performance_id.state != 'done':
+                current_doc = active_state.performance_id
+                
+                if perf_doc and current_doc.id != perf_doc.id:
+                    _, shift_end_loc = current_doc._get_local_shift_times()
+                    shift_end_utc = current_doc._get_utc_time(shift_end_loc)
+                    
+                    safe_old_end = max(active_state.start_time, min(evt_utc, shift_end_utc))
+                    active_state.write({'end_time': safe_old_end})
+                    
+                    if perf_doc.state != 'done' and shift_end_utc < evt_utc:
+                        self.env[active_model].create({
+                            'performance_id': perf_doc.id,
+                            'loss_id': active_loss_id,
+                            'start_time': shift_end_utc,
+                            'end_time': evt_utc
+                        })
+                else:
+                    active_state.write({'end_time': evt_utc})
+            
             if not perf_doc or perf_doc.state == 'done':
                 active_state = None
                 continue
@@ -319,6 +340,7 @@ class MesMachinePerformance(models.Model):
                                      ELSE previous_reason_value END
                            ELSE value END AS value
                     FROM ReasonTimelineWithPrevNext
+                    WHERE tag_name != 'OEE.nStopRootReason'
                 )
             """)
             target_table = "ResolvedEvents"
